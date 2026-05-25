@@ -1,0 +1,97 @@
+# Baseline smoke-test config for GeoResearch Agent migration.
+# Goal: run the original DeepResearch workflow with the fewest external
+# dependencies before GIS/remote-sensing customization begins.
+
+system:
+  name: "GeoResearchAgent-Baseline"
+  version: "0.1.0"
+  log_level: "INFO"
+  work_dir: "./outputs"
+
+model:
+  backend: "deepseek"
+  temperature: 0.5
+  top_p: 1.0
+  max_tokens: 2048
+  max_retries: 3
+  retry_delay: 2.0
+
+  backend_sampling:
+    deepseek:
+      temperature: 0.5
+      max_tokens: 2048
+      top_p: 1.0
+    modules:
+      planner:
+        temperature: 0.2
+        max_tokens: 2048
+      solver:
+        temperature: 0.5
+        max_tokens: 2048
+      summarizer:
+        temperature: 0.4
+        max_tokens: 4096
+      compressor:
+        temperature: 0.1
+        max_tokens: 1024
+
+  backend_mapping:
+    solver: "deepseek"
+    planner: "deepseek"
+    summarizer: "deepseek"
+    compressor: "deepseek"
+
+orchestrator:
+  max_concurrent: 2
+  global_timeout_seconds: 360
+  max_replan_rounds: 1
+  max_sub_questions: 4
+  max_subagent_retries: 1
+
+planner:
+  max_search_rounds_per_subagent: 3
+  enable_replan: true
+  enable_completeness_check: false
+
+compressor:
+  max_context_length: 12000
+  output_reserve_tokens: 1024
+  l1_threshold: 0.6
+  l2_threshold: 0.8
+  l3_threshold: 0.95
+  embedding_model: "all-MiniLM-L6-v2"
+  enable_multilevel: true
+
+memory:
+  db_path: "data/baseline_memory.db"
+  max_entries: 1000
+  similarity_threshold_dup: 0.92
+  similarity_threshold_conflict: 0.65
+  evict_interval: 100
+  enable_vector_index: true
+
+adversarial:
+  enabled: false
+  max_rounds: 1
+  score_threshold: 9.5
+  delta_threshold: 0.2
+  save_logs: false
+
+evolution:
+  enabled: false
+
+tools:
+  web_search:
+    enabled: true
+    mock_mode: true
+    max_results: 5
+    snippet_max_tokens: 256
+  arxiv_reader:
+    enabled: true
+    max_papers: 3
+    abstract_max_tokens: 512
+  code_sandbox:
+    enabled: false
+    timeout_seconds: 10
+    max_memory_mb: 512
+

@@ -1,0 +1,13 @@
+# Minimal runtime dependencies for local MVP development and smoke tests.
+# The full requirements.txt includes heavy ML packages such as torch,
+# transformers, and sentence-transformers. Install those later when the
+# GIS/remote-sensing upgrade actually needs model-local inference or
+# embedding model quality beyond the deterministic fallback.
+
+openai>=1.0
+aiohttp>=3.8
+pyyaml>=6.0
+python-dotenv>=1.0
+numpy>=1.24
+beautifulsoup4>=4.12
+
