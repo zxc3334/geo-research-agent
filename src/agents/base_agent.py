@@ -25,17 +25,19 @@ class BaseAgent(ABC):
         tools: 当前 Agent 可用的工具列表。
     """
 
-    def __init__(self, name: str, policy, tools: list | None = None):
+    def __init__(self, name: str, policy, tools: list | None = None, pool_type_key: str | None = None):
         """初始化 Agent。
 
         Args:
             name: Agent 名称。
             policy: VLLMPolicy 实例（或任何实现了 __call__(messages) 接口的对象）。
             tools: 可选的工具列表，元素需有 name / description / execute 接口。
+            pool_type_key: AgentPool 中的池类型键，用于正确回收同类型 Agent。
         """
         self.name = name
         self.policy = policy
         self.tools = tools or []
+        self.pool_type_key = pool_type_key
 
     @abstractmethod
     async def run(self, task: "SubTask", context: dict) -> "AgentResult":

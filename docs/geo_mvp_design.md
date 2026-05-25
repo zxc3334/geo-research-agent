@@ -78,14 +78,14 @@ class TaskType(Enum):
     DATA_DISCOVERY = "data_discovery"
     METHOD_DESIGN = "method_design"
     GEO_VALIDATION = "geo_validation"
-    SYNTHESIS = "synthesis"
+    SYNTHESIS = "synthesis"  # reserved for Orchestrator-managed final synthesis
 ```
 
 兼容策略：
 
 - 第一轮代码改造保留旧类型，避免一次性破坏 AgentPool 和已有测试。
 - 新类型先映射到现有 `ResearcherAgent`，只在 prompt 和工具层区分行为。
-- `SYNTHESIS` 后续再专门映射到 `SummarizerAgent`，当前 orchestrator 仍可先保留现有合成逻辑。
+- `SYNTHESIS` 暂时作为保留类型，不让 Planner 放入 DAG；当前 orchestrator 仍负责最终合成。
 
 建议中间态：
 
@@ -304,4 +304,3 @@ PLANNING -> DISPATCHING -> COLLECTING -> SYNTHESIZING
   - 推荐方法流程
   - 验证风险
   - 可信度说明
-

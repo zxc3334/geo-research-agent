@@ -47,9 +47,16 @@ class OrchestratorState(Enum):
 
 class TaskType(Enum):
     """Sub-task 的任务类型，决定由哪类 Agent 执行。"""
+    # General DeepResearch compatibility types.
     SEARCH = "search"
     ANALYZE = "analyze"
     VERIFY = "verify"
+    # GIS / remote-sensing MVP task types.
+    LITERATURE = "literature"
+    DATA_DISCOVERY = "data_discovery"
+    METHOD_DESIGN = "method_design"
+    GEO_VALIDATION = "geo_validation"
+    SYNTHESIS = "synthesis"
 
 
 class AgentStatus(Enum):

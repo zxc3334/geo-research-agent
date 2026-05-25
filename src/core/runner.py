@@ -182,7 +182,12 @@ def initialize_modules(config: dict, session_id: str = "") -> dict[str, Any]:
 
     planner_policy = modules.get("planner_policy", default_policy)
     budget_tracker = BudgetTracker()
-    planner = Planner(policy=planner_policy, budget_tracker=budget_tracker)
+    planner_cfg = config.get("planner", {})
+    planner = Planner(
+        policy=planner_policy,
+        budget_tracker=budget_tracker,
+        domain=planner_cfg.get("domain", "general"),
+    )
     modules["planner"] = planner
     logger.info("[M2] Planner 模块已初始化")
 
@@ -245,6 +250,9 @@ def initialize_modules(config: dict, session_id: str = "") -> dict[str, Any]:
         policy_factory=lambda: modules.get("solver_policy", default_policy),
         tools_factory=lambda: list(modules["tools"]),
         max_idle=3,
+        policy_factory_by_type={
+            "synthesis": lambda: modules.get("summarizer_policy", default_policy),
+        },
     )
     modules["agent_pool"] = agent_pool
 

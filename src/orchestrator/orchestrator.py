@@ -373,7 +373,7 @@ class Orchestrator:
         # 创建合成任务
         synth_task = SubTask(
             task_id="synthesize_final",
-            task_type=TaskType.ANALYZE,  # 使用 ANALYZE 类型，实际由 SummarizerAgent 处理
+            task_type=TaskType.SYNTHESIS,
             description="Synthesize all sub-task results into a final research report.",
             timeout_seconds=300,
         )
@@ -381,16 +381,16 @@ class Orchestrator:
         context = {
             "query": self._query,
             "results": self._results,
+            "domain": getattr(self.planner, "domain", "general"),
         }
 
-        agent = await self.agent_pool.get_agent(TaskType.ANALYZE)
-        # 需要 SummarizerAgent，但 agent_pool 可能返回 ResearcherAgent
-        # 这里我们通过类型检查或强制创建 SummarizerAgent
+        agent = await self.agent_pool.get_agent(TaskType.SYNTHESIS)
+        # 兼容旧池实现：如果外部注入的 AgentPool 未支持 SYNTHESIS，则强制创建 SummarizerAgent。
         from ..agents.summarizer import SummarizerAgent
         if not isinstance(agent, SummarizerAgent):
             # 优先使用配置的 summarizer_policy（更大的 max_tokens），fallback 到 agent.policy
             policy = self.summarizer_policy or agent.policy
-            agent = SummarizerAgent(name="summarizer", policy=policy, tools=agent.tools)
+            agent = SummarizerAgent(name="summarizer", policy=policy, tools=agent.tools, pool_type_key=TaskType.SYNTHESIS.value)
 
         try:
             result = await asyncio.wait_for(

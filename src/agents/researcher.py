@@ -46,8 +46,9 @@ class ResearcherAgent(BaseAgent):
         policy,
         tools: list | None = None,
         max_turns: int = 10,
+        pool_type_key: str | None = None,
     ) -> None:
-        super().__init__(name, policy, tools)
+        super().__init__(name, policy, tools, pool_type_key=pool_type_key)
         self.max_turns = max_turns
         self.tool_map: dict[str, Any] = {t.name: t for t in (tools or [])}
 

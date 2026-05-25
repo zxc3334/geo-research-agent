@@ -161,6 +161,28 @@ python -X utf8 scripts\run_single.py `
 - Summarizer 生成报告成功
 - semantic memory 成功加载 `sentence-transformers/all-MiniLM-L6-v2`
 
+## Geo MVP 运行
+
+当前 GIS/遥感 MVP 使用 `configs/geo_mvp.yaml`。它会启用 GIS/遥感 Planner prompt、新的任务类型和 GIS/遥感报告结构；搜索仍可保持 mock mode，用于验证编排链路。
+
+```powershell
+$env:LANGSMITH_TRACING="false"
+
+python -X utf8 scripts\run_single.py `
+  --query "如何研究 2018-2024 年武汉城市扩张对地表热环境的影响？" `
+  --config configs\geo_mvp.yaml `
+  --output_dir outputs\geo_mvp `
+  --session_id geo_mvp_m2 `
+  --log_level INFO
+```
+
+已验证结果：
+
+- Planner 生成 GIS/遥感 DAG
+- AgentPool 能按新 `TaskType` 路由 researcher / summarizer
+- Summarizer 输出 GIS/遥感研究报告结构
+- 报告示例：`outputs/geo_mvp/report_20260525_194006_如何研究_2018-2024_年武汉城市.md`
+
 ## 设计文档
 
 - [M2 GIS/遥感 MVP 设计草案](docs/geo_mvp_design.md)
@@ -216,4 +238,3 @@ git status
 git add .
 git commit -m "docs: rewrite readme for geo research agent"
 ```
-

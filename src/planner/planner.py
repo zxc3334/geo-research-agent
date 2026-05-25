@@ -75,6 +75,66 @@ Return a JSON object with this exact structure (no markdown, no extra text):
 {memory_context}
 """
 
+GEO_RS_PLAN_PROMPT = """\
+You are an expert GIS and remote-sensing research planner. Your task is to decompose a GIS/remote-sensing research question into a directed acyclic graph (DAG) of evidence-aware sub-tasks.
+
+## Input
+Research Question: {query}
+
+## Output Format
+Return a JSON object with this exact structure (no markdown, no extra text):
+{{
+  "sub_tasks": [
+    {{
+      "task_id": "task_1",
+      "task_type": "data_discovery",
+      "description": "Identify candidate sensors, datasets, time range, spatial resolution, and AOI requirements for the study.",
+      "dependencies": [],
+      "context_keys": [],
+      "timeout_seconds": 180,
+      "priority": 1,
+      "expected_type": "dataset_candidates",
+      "search_hints": ["Landsat", "Sentinel-2", "LST", "NDVI"]
+    }}
+  ]
+}}
+
+## Allowed task_type values
+- literature: retrieve papers, technical reports, official documentation, or method references.
+- data_discovery: identify AOI, time range, sensors, datasets, bands, spatial/temporal resolution, and data availability constraints.
+- method_design: design remote-sensing indices, GIS analysis workflow, statistical workflow, or experiment protocol.
+- geo_validation: verify whether proposed datasets and methods are compatible; check bands, resolution, CRS, cloud filtering, temporal consistency, validation data, and known remote-sensing pitfalls.
+
+Do NOT generate synthesis as a sub-task in this planner output. Final synthesis is handled by the Orchestrator after all DAG tasks finish.
+
+## Rules
+1. The graph must be a DAG and dependencies must reference existing task_id values.
+2. Generate 4 to 6 sub_tasks. Keep the plan demo-friendly and executable.
+3. Include at least one data_discovery task, one method_design task, and one geo_validation task.
+4. geo_validation tasks MUST depend on the relevant data_discovery and method_design tasks.
+5. If literature support is needed, use a literature task before method_design or geo_validation.
+6. Every task description must directly address the user's GIS/remote-sensing question.
+7. Explicitly cover AOI, time range, dataset/sensor, required bands or variables, spatial resolution, temporal consistency, and validation risks when relevant.
+8. Do NOT present unverified datasets or methods as facts. Phrase them as candidates to be verified.
+9. search_hints must contain concrete GIS/remote-sensing keywords from the query or directly related standard terms.
+10. Avoid broad generic tasks such as "research background" unless tied to a concrete dataset, method, or validation decision.
+11. Keep each description under 220 Chinese characters or 120 English words. Do not put full method details in the DAG; save details for agent execution.
+12. AOI PRESERVATION IS MANDATORY: If the query explicitly contains a place name or AOI, copy it exactly into data_discovery, method_design, and geo_validation descriptions. Never replace it with "selected AOI", "urban area", "study area", or "to be defined by user".
+13. TIME PRESERVATION IS MANDATORY: If the query contains a date or year range, copy it exactly into relevant task descriptions.
+
+## Examples of good task decomposition
+- User asks about urban expansion and heat environment:
+  data_discovery -> identify Landsat/Sentinel/WorldCover/MODIS candidates and AOI/time constraints
+  method_design -> design LST, NDVI, NDBI, impervious surface, and trend/correlation workflow
+  geo_validation -> check Sentinel-2 cannot directly retrieve LST, Landsat/Sentinel resolution mismatch, cloud and season consistency
+  final report synthesis is handled by the Orchestrator after the DAG tasks finish
+- User asks "2018-2024 Wuhan urban expansion and heat environment":
+  every relevant task must explicitly mention "Wuhan" and "2018-2024".
+
+## Context (if any)
+{memory_context}
+"""
+
 REPLAN_PROMPT = """\
 You are an expert research planner. Some sub-tasks failed and need to be re-planned.
 
@@ -114,10 +174,11 @@ class Planner:
         budget_tracker: 可选的预算追踪器，监控 planning 阶段的 token 消耗。
     """
 
-    def __init__(self, policy, budget_tracker: BudgetTracker | None = None) -> None:
+    def __init__(self, policy, budget_tracker: BudgetTracker | None = None, domain: str = "general") -> None:
         self.policy = policy
         self.budget_tracker = budget_tracker or BudgetTracker()
         self._last_raw_json: str = ""
+        self.domain = domain
 
     # ------------------------------------------------------------------
     # 公共 API
@@ -220,6 +281,9 @@ class Planner:
 
     def _build_prompt(self, query: str, memory: str) -> str:
         """构建初始规划 prompt。"""
+        if self.domain == "geo_remote_sensing":
+            return self._build_geo_prompt(query, memory)
+
         # 首次运行（无历史记忆）时，提示 Planner 更激进地拆解子任务
         has_memory = bool(memory and memory.strip() and memory != "None")
         if not has_memory:
@@ -238,6 +302,69 @@ class Planner:
                 "New tasks should fill gaps and avoid duplicating existing coverage."
             )
         return INITIAL_PLAN_PROMPT.format(query=query, memory_context=memory or "None") + extra_hint
+
+    def _build_geo_prompt(self, query: str, memory: str) -> str:
+        """构建 GIS / 遥感领域规划 prompt。"""
+        constraints = self._extract_geo_constraints(query)
+        constraints_hint = ""
+        if constraints:
+            constraints_hint = (
+                "\n## Extracted Query Constraints\n"
+                "These constraints were extracted from the user query and MUST be copied into relevant tasks:\n"
+                + "\n".join(f"- {k}: {v}" for k, v in constraints.items())
+                + "\n"
+            )
+        has_memory = bool(memory and memory.strip() and memory != "None")
+        if not has_memory:
+            extra_hint = (
+                "\n## Note\n"
+                "No previous GIS/remote-sensing memory is available. Generate a compact 4-6 task plan. "
+                "The plan must start from data and method candidates, then validate compatibility before synthesis. "
+                "Prefer concrete remote-sensing terms such as AOI, time range, Landsat, Sentinel, LST, NDVI, NDBI, CRS, cloud mask, and spatial resolution when relevant."
+            )
+        else:
+            extra_hint = (
+                "\n## Note\n"
+                "Use existing memory as evidence context. Avoid duplicating prior findings. "
+                "Add validation tasks for any dataset or method that is not already verified."
+            )
+        return GEO_RS_PLAN_PROMPT.format(query=query, memory_context=memory or "None") + constraints_hint + extra_hint
+
+    def _extract_geo_constraints(self, query: str) -> dict[str, str]:
+        """Extract obvious AOI/time constraints to reduce planner drift.
+
+        This is intentionally lightweight. It is not a full geocoder; it only
+        surfaces explicit entities already present in the query so the LLM does
+        not replace them with generic wording such as "selected AOI".
+        """
+        constraints: dict[str, str] = {}
+
+        year_ranges = re.findall(r"\d{4}\s*[-–—]\s*\d{4}", query)
+        if year_ranges:
+            constraints["time_range"] = year_ranges[0].replace(" ", "")
+
+        # Common Chinese GIS query pattern: "2018-2024 年武汉城市扩张..."
+        m = re.search(
+            r"(?:\d{4}\s*[-–—]\s*\d{4}\s*(?:年)?\s*)"
+            r"([\u4e00-\u9fa5]{2,12}?)(?:城市|地区|区域|地表|土地|植被|洪水|滑坡|海岸|湖泊|河流)",
+            query,
+        )
+        if m:
+            constraints["aoi"] = self._normalize_aoi(m.group(1))
+        else:
+            m = re.search(r"([\u4e00-\u9fa5]{2,12}(?:市|省|县|区|流域|湖|河|湿地|保护区))", query)
+            if m:
+                constraints["aoi"] = self._normalize_aoi(m.group(1))
+
+        return constraints
+
+    @staticmethod
+    def _normalize_aoi(aoi: str) -> str:
+        """Remove common task verbs accidentally captured before Chinese AOIs."""
+        for prefix in ("如何研究", "研究", "分析", "评估", "监测", "识别", "提取"):
+            if aoi.startswith(prefix) and len(aoi) > len(prefix) + 1:
+                return aoi[len(prefix) :]
+        return aoi
 
     def _parse_plan(self, json_str: str) -> DAG:
         """健壮性 JSON 解析：处理 markdown 代码块、多余换行等噪声。

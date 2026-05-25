@@ -28,8 +28,8 @@ class SummarizerAgent(BaseAgent):
         max_output_tokens: 报告生成的最大 token 数（通过 policy.max_tokens 控制）。
     """
 
-    def __init__(self, name: str, policy, tools: list | None = None) -> None:
-        super().__init__(name, policy, tools)
+    def __init__(self, name: str, policy, tools: list | None = None, pool_type_key: str | None = None) -> None:
+        super().__init__(name, policy, tools, pool_type_key=pool_type_key)
 
     @trace_agent(name="summarizer.run", tags=["agent", "summarizer"])
     async def run(self, task: SubTask, context: dict) -> AgentResult:
@@ -46,6 +46,7 @@ class SummarizerAgent(BaseAgent):
         """
         query = context.get("query", "")
         results: list[AgentResult] = context.get("results", [])
+        domain = context.get("domain", "general")
 
         if not results:
             report = ResearchReport(
@@ -63,9 +64,9 @@ class SummarizerAgent(BaseAgent):
             )
 
         # 构建 synthesis prompt
-        prompt = self._build_synthesis_prompt(query, results)
+        prompt = self._build_synthesis_prompt(query, results, domain=domain)
         messages = [
-            {"role": "system", "content": self._system_prompt()},
+            {"role": "system", "content": self._system_prompt(domain)},
             {"role": "user", "content": prompt},
         ]
 
@@ -100,7 +101,19 @@ class SummarizerAgent(BaseAgent):
             confidence=report.confidence,
         )
 
-    def _system_prompt(self) -> str:
+    def _system_prompt(self, domain: str = "general") -> str:
+        if domain == "geo_remote_sensing":
+            return (
+                "You are an expert GIS and remote-sensing research synthesizer. "
+                "Your task is to integrate sub-task findings into a concrete, evidence-aware GIS/remote-sensing research report. "
+                "Use Markdown formatting and cite sources explicitly when they are available. "
+                "Do not invent datasets, bands, algorithms, platform capabilities, spatial resolution, temporal resolution, or validation data. "
+                "When evidence is insufficient, label the item as Speculative or Needs Verification. "
+                "The report body MUST be at least 2500 Chinese characters (or 1600 English words) long. "
+                "DO NOT describe what you will do; directly output the synthesized report. "
+                "At the end, provide Overall Confidence: X.XX and a short source/evidence summary."
+            )
+
         return (
             "You are an expert research synthesizer. "
             "Your task is to integrate multiple research findings into a coherent, well-structured report. "
@@ -111,7 +124,7 @@ class SummarizerAgent(BaseAgent):
             "At the end, provide an overall confidence score (0-1) and a summary of key sources."
         )
 
-    def _build_synthesis_prompt(self, query: str, results: list[AgentResult]) -> str:
+    def _build_synthesis_prompt(self, query: str, results: list[AgentResult], domain: str = "general") -> str:
         """构建合成 prompt，按置信度降序排列结果。"""
         sorted_results = sorted(results, key=lambda r: r.confidence, reverse=True)
 
@@ -127,15 +140,38 @@ class SummarizerAgent(BaseAgent):
                 f"Output:\n{r.output}\n"
             )
 
-        parts.append(
-            "\n# Instructions\n"
-            "1. Directly write the synthesized report based on the findings above. Do NOT say 'I will synthesize'.\n"
-            "2. The report MUST be comprehensive and detailed (at least 3000 Chinese characters or 2000 English words).\n"
-            "3. Structure: Executive Summary → Background → Key Findings (with details) → Analysis → Comparisons → Implications → Conclusion.\n"
-            "4. Resolve any contradictions between sources.\n"
-            "5. Explicitly list all sources cited.\n"
-            "6. End with: Overall Confidence: X.XX"
-        )
+        if domain == "geo_remote_sensing":
+            parts.append(
+                "\n# Instructions\n"
+                "1. Directly write the final GIS/remote-sensing research report. Do NOT say 'I will synthesize'.\n"
+                "2. The report MUST be comprehensive and detailed (at least 2500 Chinese characters or 1600 English words).\n"
+                "3. Use this exact top-level structure:\n"
+                "   - 研究问题与核心结论\n"
+                "   - 数据候选与适用性\n"
+                "   - 方法链路设计\n"
+                "   - GIS/遥感验证清单\n"
+                "   - 风险、限制与替代方案\n"
+                "   - 可执行 MVP 工作流\n"
+                "   - 证据与引用\n"
+                "   - 可信度分级\n"
+                "4. In 数据候选与适用性, explicitly discuss AOI, time range, sensors/datasets, required bands or variables, spatial resolution, temporal consistency, and availability risks when mentioned by sub-task results.\n"
+                "5. In 方法链路设计, distinguish candidate methods from verified methods. Do not claim a method is valid unless the sub-task results support it.\n"
+                "6. In GIS/遥感验证清单, include checks for CRS, cloud mask, season/month consistency, scale mismatch, missing bands, validation data, and known sensor limitations when relevant.\n"
+                "7. In 可信度分级, classify claims as Verified, Evidence-backed, Speculative, or Rejected/Not supported.\n"
+                "8. Resolve contradictions between sub-task results and explain which result is more reliable.\n"
+                "9. Explicitly list all cited sources. If the run used mock or insufficient sources, say so clearly.\n"
+                "10. End with: Overall Confidence: X.XX"
+            )
+        else:
+            parts.append(
+                "\n# Instructions\n"
+                "1. Directly write the synthesized report based on the findings above. Do NOT say 'I will synthesize'.\n"
+                "2. The report MUST be comprehensive and detailed (at least 3000 Chinese characters or 2000 English words).\n"
+                "3. Structure: Executive Summary → Background → Key Findings (with details) → Analysis → Comparisons → Implications → Conclusion.\n"
+                "4. Resolve any contradictions between sources.\n"
+                "5. Explicitly list all sources cited.\n"
+                "6. End with: Overall Confidence: X.XX"
+            )
         return "\n".join(parts)
 
     def _parse_report(self, query: str, content: str, results: list[AgentResult]) -> ResearchReport:
