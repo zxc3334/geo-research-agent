@@ -19,6 +19,7 @@ import os
 import sys
 
 from src.core.runner import initialize_modules, load_config, run_research, save_report, setup_logging
+from scripts.render_trace import render_trace_report
 
 
 def main() -> None:
@@ -81,6 +82,11 @@ def main() -> None:
 
         filepath = save_report(report, args.query, args.output_dir)
         logger.info(f"报告已保存: {filepath}")
+        try:
+            trace_report = render_trace_report(trace_filename)
+            logger.info(f"Trace HTML 已保存: {trace_report}")
+        except Exception as trace_error:
+            logger.warning(f"Trace HTML 生成失败: {trace_error}")
 
         print("\n" + "=" * 60)
         print("最终研究报告")

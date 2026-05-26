@@ -75,6 +75,7 @@ class Orchestrator:
         # 运行时状态（保留 dict 作为快速缓存，M4 提供持久化 + 语义检索）
         self._memory_store: dict[str, Any] = {}
         self._results: list[AgentResult] = []
+        self._synthesis_result: AgentResult | None = None
         self._dag: DAG | None = None
         self._task_map: dict[str, SubTask] = {}
         self._current_state = OrchestratorState.IDLE
@@ -119,6 +120,7 @@ class Orchestrator:
         self._adversarial_count = 0
         self._memory_store.clear()
         self._results.clear()
+        self._synthesis_result = None
         self._dag = None
         self._task_map.clear()
         self._current_state = OrchestratorState.IDLE
@@ -176,7 +178,9 @@ class Orchestrator:
                     num_searches=report.num_searches,
                     num_replan=report.num_replan,
                     adversarial_rounds=report.adversarial_rounds,
-                    usage=self._sum_usage(self._results),
+                    usage=self._sum_usage(
+                        self._results + ([self._synthesis_result] if self._synthesis_result else [])
+                    ),
                 )
 
             # M4: 将最终报告存入 SharedMemoryStore
@@ -375,6 +379,8 @@ class Orchestrator:
                         source=item.source,
                         rationale=item.rationale,
                         confidence=item.confidence,
+                        source_type=item.metadata.get("source_type", ""),
+                        metadata=item.metadata,
                     )
 
         # M4: 将成功结果同步写入 SharedMemoryStore（持久化 + 向量索引）
@@ -486,6 +492,8 @@ class Orchestrator:
             )
         finally:
             await self.agent_pool.release_agent(agent)
+
+        self._synthesis_result = result
 
         if result.status == AgentStatus.SUCCESS and isinstance(result.output, ResearchReport):
             self._memory_store["final_report"] = result.output

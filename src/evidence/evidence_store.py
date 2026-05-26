@@ -83,9 +83,9 @@ class EvidenceStore:
         if result.status in (AgentStatus.FAILED, AgentStatus.TIMEOUT):
             return EvidenceLevel.REJECTED, f"Task ended with status={result.status.value}."
 
-        tool_level = self._level_from_structured_tool(result)
+        tool_level = self._level_from_structured_tool(result, sources=sources)
         if tool_level is not None:
-            return tool_level, "Structured GIS/remote-sensing registry tool returned an explicit evidence level."
+            return tool_level, "Structured tool evidence level was capped by source provenance."
 
         if self._looks_rejected(output_text):
             return EvidenceLevel.REJECTED, "Output explicitly states that the claim is unsupported or the tool failed."
@@ -221,6 +221,56 @@ class EvidenceStore:
         snippet = str(source.get("snippet", "")).lower()
         return "example.com/mock" in url or "mock result" in title or "mock search result" in snippet
 
+    def _is_external_url(self, source: str) -> bool:
+        normalized = str(source or "").lower()
+        return normalized.startswith("http://") or normalized.startswith("https://")
+
+    def _structured_source_type(
+        self,
+        tool_name: str,
+        payload: dict[str, Any],
+        source: str = "",
+        official_sources: list[Any] | None = None,
+    ) -> str:
+        explicit = str(payload.get("source_type") or "")
+        if explicit:
+            if official_sources and self._is_external_url(source):
+                return f"{explicit}_with_official_url"
+            return explicit
+        if tool_name == "official_source_search":
+            return "official_search"
+        registry_type = payload.get("registry_type")
+        if registry_type == "geo_plan_validation" or str(source).startswith("geo-registry://"):
+            return "registry_heuristic"
+        if registry_type in ("dataset", "method"):
+            return "registry_curated_with_official_url" if self._is_external_url(source) else "registry_heuristic"
+        return "structured_tool"
+
+    def _cap_structured_level(
+        self,
+        level: EvidenceLevel,
+        tool_name: str,
+        payload: dict[str, Any],
+        source: str = "",
+    ) -> EvidenceLevel:
+        """Prevent local registries from promoting hints into verified evidence."""
+        if level == EvidenceLevel.REJECTED:
+            return EvidenceLevel.REJECTED
+
+        registry_type = payload.get("registry_type")
+        if registry_type == "geo_plan_validation" or str(source).startswith("geo-registry://"):
+            return EvidenceLevel.SPECULATIVE
+
+        if registry_type in ("dataset", "method"):
+            if self._is_external_url(source):
+                return EvidenceLevel.EVIDENCE_BACKED
+            return EvidenceLevel.SPECULATIVE
+
+        if tool_name == "official_source_search" and level == EvidenceLevel.VERIFIED:
+            return EvidenceLevel.EVIDENCE_BACKED
+
+        return level
+
     def _structured_evidence_items(self, result: AgentResult, task: SubTask | None = None) -> list[EvidenceItem]:
         """Convert structured registry payloads into claim-level evidence items."""
         items: list[EvidenceItem] = []
@@ -236,15 +286,20 @@ class EvidenceStore:
 
             if isinstance(payload.get("checks"), list):
                 source = self._source_for_structured_payload(tool_name, payload)
+                source_type = self._structured_source_type(tool_name, payload, source=source)
                 for check in payload["checks"]:
                     if not isinstance(check, dict):
                         continue
-                    level = self._normalize_level(check.get("level"))
+                    raw_level = self._normalize_level(check.get("level"))
+                    level = self._cap_structured_level(raw_level, tool_name, payload, source=source)
+                    rationale = str(check.get("reason", "") or "Structured GIS/remote-sensing validation check.")
+                    if source_type.startswith("registry_"):
+                        rationale = f"{rationale} Source type: {source_type}; external verification is required."
                     items.append(EvidenceItem(
                         claim=str(check.get("claim", "") or "Structured validation check"),
                         level=level,
                         source=source,
-                        rationale=str(check.get("reason", "") or "Structured GIS/remote-sensing validation check."),
+                        rationale=rationale,
                         task_id=result.task_id,
                         confidence=result.confidence,
                         metadata={
@@ -253,13 +308,16 @@ class EvidenceStore:
                             "status": result.status.value,
                             "fix": check.get("fix", ""),
                             "registry_type": payload.get("registry_type", ""),
+                            "source_type": source_type,
+                            "raw_evidence_level": raw_level.value,
+                            "requires_external_verification": bool(payload.get("requires_external_verification", False)),
                         },
                     ))
                 continue
 
             registry_type = payload.get("registry_type")
             if registry_type in ("dataset", "method") and isinstance(payload.get("results"), list):
-                level = self._normalize_level(payload.get("evidence_level"))
+                raw_level = self._normalize_level(payload.get("evidence_level"))
                 for record in payload["results"]:
                     if not isinstance(record, dict):
                         continue
@@ -267,14 +325,20 @@ class EvidenceStore:
                     source = ""
                     if sources and isinstance(sources[0], dict):
                         source = sources[0].get("url", "") or sources[0].get("title", "")
+                    level = self._cap_structured_level(raw_level, tool_name, payload, source=source)
+                    source_type = self._structured_source_type(tool_name, payload, source=source, official_sources=sources)
                     claim = record.get("dataset") or record.get("method") or str(record)[:300]
                     rationale_parts = record.get("limitations") or record.get("valid_for") or []
                     rationale = "; ".join(str(part) for part in rationale_parts[:2]) if isinstance(rationale_parts, list) else str(rationale_parts)
+                    if source_type == "registry_curated_with_official_url":
+                        rationale = (rationale + " " if rationale else "") + "Curated registry record with an official URL; source-backed but not page-grounded."
+                    else:
+                        rationale = (rationale + " " if rationale else "") + "Curated registry record; treat as heuristic until verified by external retrieval."
                     items.append(EvidenceItem(
                         claim=str(claim),
                         level=level,
                         source=source,
-                        rationale=rationale or "Curated GIS/remote-sensing registry record.",
+                        rationale=rationale,
                         task_id=result.task_id,
                         confidence=result.confidence,
                         metadata={
@@ -283,6 +347,9 @@ class EvidenceStore:
                             "status": result.status.value,
                             "registry_type": registry_type,
                             "sources": sources,
+                            "source_type": source_type,
+                            "raw_evidence_level": raw_level.value,
+                            "requires_external_verification": bool(payload.get("requires_external_verification", True)),
                         },
                     ))
 
@@ -306,8 +373,9 @@ class EvidenceStore:
             return EvidenceLevel.REJECTED
         return EvidenceLevel.SPECULATIVE
 
-    def _level_from_structured_tool(self, result: AgentResult) -> EvidenceLevel | None:
+    def _level_from_structured_tool(self, result: AgentResult, sources: list[dict[str, Any]] | None = None) -> EvidenceLevel | None:
         """Read explicit evidence levels from structured tools when available."""
+        sources = sources or []
         priority = {
             EvidenceLevel.REJECTED: 4,
             EvidenceLevel.VERIFIED: 3,
@@ -321,6 +389,14 @@ class EvidenceStore:
             payload = step.get("result")
             if not isinstance(payload, dict):
                 continue
+            tool_name = step.get("name", "")
+            source = self._source_for_structured_payload(tool_name, payload)
+            if payload.get("registry_type") in ("dataset", "method"):
+                for external_source in sources:
+                    candidate_source = external_source.get("url", "") or external_source.get("title", "")
+                    if self._is_external_url(candidate_source):
+                        source = candidate_source
+                        break
 
             levels = []
             if payload.get("evidence_level"):
@@ -330,7 +406,12 @@ class EvidenceStore:
                     levels.append(str(check["level"]))
 
             for raw_level in levels:
-                candidate = self._normalize_level(raw_level)
+                candidate = self._cap_structured_level(
+                    self._normalize_level(raw_level),
+                    tool_name,
+                    payload,
+                    source=source,
+                )
                 if best is None or priority[candidate] > priority[best]:
                     best = candidate
         return best

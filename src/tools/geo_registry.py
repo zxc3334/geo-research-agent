@@ -1,8 +1,8 @@
 """GIS / remote-sensing structured registry tools.
 
-These tools provide deterministic, evidence-shaped facts for the GeoResearch
-MVP. They are intentionally small and curated; M4 can later replace or augment
-them with STAC search, official documentation retrieval, or local literature RAG.
+These tools provide deterministic, evidence-shaped hints for the GeoResearch
+MVP. They are intentionally small and curated; they are not treated as verified
+evidence unless another tool retrieves external source content.
 """
 from __future__ import annotations
 
@@ -193,7 +193,9 @@ class DatasetRegistryTool:
         return {
             "query": query,
             "registry_type": "dataset",
-            "evidence_level": "verified",
+            "source_type": "registry_curated",
+            "requires_external_verification": True,
+            "evidence_level": "evidence_backed",
             "results": matches,
         }
 
@@ -237,7 +239,9 @@ class MethodRegistryTool:
         return {
             "query": query,
             "registry_type": "method",
-            "evidence_level": "verified",
+            "source_type": "registry_curated",
+            "requires_external_verification": True,
+            "evidence_level": "speculative",
             "results": matches,
         }
 
@@ -282,9 +286,9 @@ class GeoPlanValidatorTool:
 
         if "landsat" in text and ("lst" in text or "地表温度" in text):
             checks.append({
-                "level": "verified",
+                "level": "speculative",
                 "claim": "Landsat can support LST retrieval with thermal infrared data.",
-                "reason": "Landsat 8/9 TIRS provides thermal infrared data; Band 10 is commonly used for single-channel LST workflows.",
+                "reason": "Built-in registry heuristic: Landsat 8/9 TIRS provides thermal infrared data; confirm with official documentation before treating as verified.",
                 "fix": "Apply cloud masking, emissivity estimation, and atmospheric correction; document thermal-band resolution.",
             })
 
@@ -298,9 +302,9 @@ class GeoPlanValidatorTool:
 
         if "ndbi" in text:
             checks.append({
-                "level": "evidence_backed",
+                "level": "speculative",
                 "claim": "NDBI can support built-up area screening.",
-                "reason": "NDBI uses SWIR and NIR but can confuse bare soil with built-up surfaces.",
+                "reason": "Built-in registry heuristic: NDBI uses SWIR and NIR but can confuse bare soil with built-up surfaces.",
                 "fix": "Validate with classification samples or combine with NDVI/MNDWI/land-cover masks.",
             })
 
@@ -314,7 +318,9 @@ class GeoPlanValidatorTool:
 
         return {
             "registry_type": "geo_plan_validation",
-            "evidence_level": "verified" if any(c["level"] == "verified" for c in checks) else "speculative",
+            "source_type": "registry_heuristic",
+            "requires_external_verification": True,
+            "evidence_level": "speculative",
             "checks": checks,
             "results": [
                 {
