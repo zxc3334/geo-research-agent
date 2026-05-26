@@ -138,6 +138,38 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 
 注意：`.env` 已被 `.gitignore` 忽略，不要提交密钥。
 
+## Provider / Model 配置
+
+M6 之后，推荐把“API 服务商”和“模块使用的模型配置”分开写：
+
+```yaml
+model:
+  default_profile: "solver"
+  providers:
+    deepseek:
+      adapter: "openai_compatible"
+      env_prefix: "DEEPSEEK"
+      default_model: "deepseek-chat"
+      default_base_url: "https://api.deepseek.com/v1"
+  profiles:
+    planner:
+      provider: "deepseek"
+      temperature: 0.2
+      max_tokens: 4096
+    solver:
+      provider: "deepseek"
+      temperature: 0.5
+      max_tokens: 2048
+  module_profiles:
+    planner: "planner"
+    solver: "solver"
+```
+
+- `providers`：封装 API 服务商、OpenAI-compatible adapter、env 前缀、默认模型和 base URL。
+- `profiles`：封装模型名、temperature、top_p、max_tokens 等调用参数。
+- `module_profiles`：决定 `planner / solver / summarizer / compressor` 分别使用哪个 profile。
+- 旧的 `backend / backend_sampling / backend_mapping` 仍兼容，但新配置优先使用上述命名。
+
 ## Baseline 运行
 
 当前 baseline 使用 mock search，目的是验证主流程，而不是生成真实证据报告。

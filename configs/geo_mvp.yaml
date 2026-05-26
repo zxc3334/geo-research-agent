@@ -9,37 +9,39 @@ system:
   work_dir: "./outputs"
 
 model:
-  backend: "deepseek"
-  temperature: 0.5
-  top_p: 1.0
-  max_tokens: 2048
-  max_retries: 3
-  retry_delay: 2.0
-
-  backend_sampling:
+  default_profile: "solver"
+  providers:
     deepseek:
-      temperature: 0.5
-      max_tokens: 2048
+      adapter: "openai_compatible"
+      env_prefix: "DEEPSEEK"
+      default_model: "deepseek-chat"
+      default_base_url: "https://api.deepseek.com/v1"
+  profiles:
+    planner:
+      provider: "deepseek"
+      temperature: 0.2
       top_p: 1.0
-    modules:
-      planner:
-        temperature: 0.2
-        max_tokens: 4096
-      solver:
-        temperature: 0.5
-        max_tokens: 2048
-      summarizer:
-        temperature: 0.4
-        max_tokens: 4096
-      compressor:
-        temperature: 0.1
-        max_tokens: 1024
-
-  backend_mapping:
-    solver: "deepseek"
-    planner: "deepseek"
-    summarizer: "deepseek"
-    compressor: "deepseek"
+      max_tokens: 4096
+    solver:
+      provider: "deepseek"
+      temperature: 0.5
+      top_p: 1.0
+      max_tokens: 2048
+    summarizer:
+      provider: "deepseek"
+      temperature: 0.4
+      top_p: 1.0
+      max_tokens: 4096
+    compressor:
+      provider: "deepseek"
+      temperature: 0.1
+      top_p: 1.0
+      max_tokens: 1024
+  module_profiles:
+    planner: "planner"
+    solver: "solver"
+    summarizer: "summarizer"
+    compressor: "compressor"
 
 orchestrator:
   max_concurrent: 2

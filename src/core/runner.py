@@ -161,42 +161,37 @@ def initialize_modules(config: dict, session_id: str = "") -> dict[str, Any]:
     # ------------------------------------------------------------------
     # 多后端 LLM 初始化（从 .env + configs/default.yaml 读取配置）
     # ------------------------------------------------------------------
-    from src.models.model_router import ModelRouter
+    from src.models.model_factory import LLMModelFactory
 
     model_cfg = config.get("model", {})
-    default_backend = model_cfg.get("backend", "vllm")
-    backend_mapping = model_cfg.get("backend_mapping", {})
-    backend_sampling = model_cfg.get("backend_sampling", {})
-
-    # 辅助函数：根据模块名获取采样参数覆盖
-    def _get_sampling_kwargs(module_name: str, backend_name: str) -> dict:
-        """合并后端全局默认 + 模块级覆盖参数。"""
-        kwargs = {}
-        # 1. 后端全局默认
-        if backend_name in backend_sampling:
-            kwargs.update(backend_sampling[backend_name])
-        # 2. 模块级覆盖（优先级更高）
-        module_overrides = backend_sampling.get("modules", {}).get(module_name, {})
-        kwargs.update(module_overrides)
-        return kwargs
+    model_factory = LLMModelFactory(model_cfg)
+    modules["model_factory"] = model_factory
+    backend_mapping = model_factory.module_profiles
 
     def _create_policy(module_name: str, use_cache: bool = True):
-        """Create a policy for one module using mapping + sampling config."""
-        backend_name = backend_mapping.get(module_name, default_backend)
-        kwargs = _get_sampling_kwargs(module_name, backend_name)
-        return ModelRouter.create_backend(backend_name, use_cache=use_cache, **kwargs)
+        """Create a policy for one module using provider/profile routing."""
+        return model_factory.create_policy(module_name, use_cache=use_cache)
 
     # 默认后端（所有模块共用）
-    default_kwargs = _get_sampling_kwargs("default", default_backend)
-    default_policy = ModelRouter.create_backend(default_backend, **default_kwargs)
+    default_kwargs = model_factory.describe_module("default")
+    default_policy = model_factory.create_policy("default")
     modules["default_policy"] = default_policy
-    logger.info(f"[LLM] 默认后端已加载: {default_backend} ({default_kwargs})")
+    logger.info(f"[LLM] default resolved: {default_kwargs}")
 
-    # 多后端分工：不同模块用不同后端 + 不同采样参数
-    for module_name, backend_name in backend_mapping.items():
-        kwargs = _get_sampling_kwargs(module_name, backend_name)
-        modules[f"{module_name}_policy"] = ModelRouter.create_backend(backend_name, **kwargs)
-        logger.info(f"[LLM] {module_name} → 后端={backend_name}, 采样={kwargs}")
+    # Module-level model routing: planner/solver/summarizer may use different profiles.
+    known_policy_modules = {
+        "planner",
+        "solver",
+        "summarizer",
+        "compressor",
+        "red_agent",
+        "blue_agent",
+        "judge",
+    }
+    for module_name in sorted(known_policy_modules | set(backend_mapping)):
+        kwargs = model_factory.describe_module(module_name)
+        modules[f"{module_name}_policy"] = model_factory.create_policy(module_name)
+        logger.info(f"[LLM] {module_name} resolved: {kwargs}")
 
     # 若未配置分工，所有模块回退到 default_policy
     # ------------------------------------------------------------------

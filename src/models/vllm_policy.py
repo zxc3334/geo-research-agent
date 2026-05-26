@@ -61,6 +61,7 @@ class VLLMPolicy:
         from ..utils.tracing import maybe_wrap_openai_client
         self.client = maybe_wrap_openai_client(raw_client)
         self.model_name = model_name
+        self.base_url = base_url
         self.temperature = temperature
         self.top_p = top_p
         self.max_tokens = max_tokens
