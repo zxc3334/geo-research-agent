@@ -86,6 +86,9 @@ def _create_tools_factory(config: dict):
         CodeSandboxTool,
         CalculatorTool,
         NotepadTool,
+        DatasetRegistryTool,
+        MethodRegistryTool,
+        GeoPlanValidatorTool,
     )
 
     tools = {}
@@ -116,6 +119,13 @@ def _create_tools_factory(config: dict):
 
     # 7. notepad
     tools["notepad"] = NotepadTool()
+
+    # 8. GIS / remote-sensing structured registry tools
+    geo_tools_cfg = tools_cfg.get("geo_registry", {})
+    if geo_tools_cfg.get("enabled", False):
+        tools["dataset_registry"] = DatasetRegistryTool()
+        tools["method_registry"] = MethodRegistryTool()
+        tools["geo_plan_validator"] = GeoPlanValidatorTool()
 
     # 返回列表形式（AgentPool 和 Agent 构造函数需要 list）
     return list(tools.values())
@@ -381,6 +391,14 @@ def _format_report(report, elapsed: float) -> str:
         f"- **总耗时**: {elapsed:.2f} 秒",
         "",
     ]
+
+    evidence_counts = getattr(report, "evidence_summary", {}).get("counts", {})
+    if evidence_counts:
+        lines.append("## 证据分级统计")
+        lines.append("")
+        for key in ("verified", "evidence_backed", "speculative", "rejected"):
+            lines.append(f"- **{key}**: {evidence_counts.get(key, 0)}")
+        lines.append("")
 
     if report.sources:
         lines.append("## 参考来源")

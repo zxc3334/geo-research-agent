@@ -15,6 +15,8 @@ __all__ = [
     "OrchestratorState",
     "TaskType",
     "AgentStatus",
+    "EvidenceLevel",
+    "EvidenceItem",
     "SubTask",
     "AgentResult",
     "ResearchReport",
@@ -66,9 +68,57 @@ class AgentStatus(Enum):
     TIMEOUT = "timeout"
 
 
+class EvidenceLevel(Enum):
+    """Evidence-aware claim level.
+
+    VERIFIED: explicitly validated by a validation task or strong source-backed check.
+    EVIDENCE_BACKED: supported by tool/search/source evidence but not fully validated.
+    SPECULATIVE: plausible inference or LLM prior with insufficient source evidence.
+    REJECTED: failed, contradicted, or explicitly not supported.
+    """
+    VERIFIED = "verified"
+    EVIDENCE_BACKED = "evidence_backed"
+    SPECULATIVE = "speculative"
+    REJECTED = "rejected"
+
+
 # ============================================================================
 # 数据类定义
 # ============================================================================
+
+@dataclass
+class EvidenceItem:
+    """Single claim with evidence classification.
+
+    Attributes:
+        claim: Claim text extracted from an agent output.
+        level: Evidence confidence level.
+        source: Source identifier or URL. Empty when no external source exists.
+        rationale: Why this level was assigned.
+        task_id: Source task id.
+        confidence: Claim confidence [0.0, 1.0].
+        metadata: Flexible evidence details, e.g. URLs or tool names.
+    """
+    claim: str
+    level: EvidenceLevel
+    source: str = ""
+    rationale: str = ""
+    task_id: str = ""
+    confidence: float = 0.0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize for metadata, logs, and report prompts."""
+        return {
+            "claim": self.claim,
+            "level": self.level.value,
+            "source": self.source,
+            "rationale": self.rationale,
+            "task_id": self.task_id,
+            "confidence": self.confidence,
+            "metadata": self.metadata,
+        }
+
 
 @dataclass
 class SubTask:
@@ -107,6 +157,7 @@ class AgentResult:
         trajectory: 多轮交互轨迹，用于日志和后续分析。
         token_usage: 本次任务消耗的 token 数。
         confidence: 结果置信度 [0.0, 1.0]。
+        evidence_items: evidence-aware claim list.
     """
     task_id: str
     status: AgentStatus
@@ -114,6 +165,7 @@ class AgentResult:
     trajectory: list[dict] = field(default_factory=list)
     token_usage: int = 0
     confidence: float = 0.0
+    evidence_items: list[EvidenceItem] = field(default_factory=list)
 
 
 @dataclass
@@ -129,6 +181,7 @@ class ResearchReport:
         num_replan: 重规划次数。
         adversarial_rounds: 对抗验证轮数。
         final_score: 最终综合评分（由外部评测模块写入）。
+        evidence_summary: evidence-aware summary grouped by level.
     """
     query: str
     content: str
@@ -138,6 +191,7 @@ class ResearchReport:
     num_replan: int = 0
     adversarial_rounds: int = 0
     final_score: float = 0.0
+    evidence_summary: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

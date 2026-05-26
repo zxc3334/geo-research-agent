@@ -26,6 +26,12 @@ class ResearchPromptBuilder:
             "  USE to record key numbers, conclusions, or next search queries.\n"
             "- file_reader: Read local files (.txt/.md/.pdf/.csv/.json/.docx). "
             "  USE only when the task explicitly references a local file path.\n"
+            "- dataset_registry: Curated GIS/remote-sensing dataset facts. "
+            "  USE for sensors, bands, spatial/temporal resolution, and dataset limitations.\n"
+            "- method_registry: Curated GIS/remote-sensing method facts. "
+            "  USE for formulas, required inputs, valid use cases, and limitations.\n"
+            "- geo_plan_validator: Deterministic GIS/remote-sensing compatibility validator. "
+            "  USE for checking whether a dataset-method workflow is valid.\n"
             "\nIMPORTANT RULES:\n"
             "1. You MUST use a tool to find factual information. Do NOT answer from your own knowledge.\n"
             "2. Choose the RIGHT tool based on the task type. You can use MULTIPLE tools in sequence.\n"
@@ -71,11 +77,43 @@ class ResearchPromptBuilder:
         if any(kw in desc_lower for kw in file_keywords):
             tool_recommendations.append("file_reader")
 
-        is_academic = "arxiv_reader" in tool_recommendations
-        if is_academic:
+        geo_dataset_keywords = [
+            "landsat", "sentinel", "modis", "era5", "数据源", "数据集", "传感器",
+            "波段", "分辨率", "lst", "ndvi", "ndbi", "地表温度",
+        ]
+        if any(kw in desc_lower for kw in geo_dataset_keywords):
+            tool_recommendations.append("dataset_registry")
+
+        geo_method_keywords = [
+            "方法", "公式", "指数", "反演", "lst", "ndvi", "ndbi", "gwr",
+            "地理加权回归", "单窗", "单通道", "split-window",
+        ]
+        if any(kw in desc_lower for kw in geo_method_keywords):
+            tool_recommendations.append("method_registry")
+
+        geo_validation_keywords = [
+            "验证", "兼容", "检查", "风险", "限制", "crs", "云", "云掩膜",
+            "空间分辨率", "时间一致性", "验证清单",
+        ]
+        if any(kw in desc_lower for kw in geo_validation_keywords):
+            tool_recommendations.append("geo_plan_validator")
+
+        if "geo_plan_validator" in tool_recommendations:
+            tool_recommendations = ["geo_plan_validator"] + [t for t in tool_recommendations if t != "geo_plan_validator"]
+        elif "dataset_registry" in tool_recommendations:
+            tool_recommendations = ["dataset_registry"] + [t for t in tool_recommendations if t != "dataset_registry"]
+        elif "method_registry" in tool_recommendations:
+            tool_recommendations = ["method_registry"] + [t for t in tool_recommendations if t != "method_registry"]
+        elif "arxiv_reader" in tool_recommendations:
             tool_recommendations = ["arxiv_reader"] + [t for t in tool_recommendations if t != "arxiv_reader"]
         elif not tool_recommendations:
             tool_recommendations.insert(0, "web_search")
+
+        deduped = []
+        for tool_name in tool_recommendations:
+            if tool_name not in deduped:
+                deduped.append(tool_name)
+        tool_recommendations = deduped
 
         primary_tool = tool_recommendations[0]
         secondary_tools = tool_recommendations[1:]

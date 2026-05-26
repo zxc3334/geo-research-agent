@@ -95,3 +95,5 @@ tools:
     enabled: false
     timeout_seconds: 10
     max_memory_mb: 512
+  geo_registry:
+    enabled: true

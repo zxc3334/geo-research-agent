@@ -8,6 +8,7 @@ from .browser import BrowserTool, MockBrowserTool, BaseBrowserTool, get_browser_
 from .file_reader import FileReaderTool
 from .calculator import CalculatorTool
 from .notepad import NotepadTool, NotepadEntry
+from .geo_registry import DatasetRegistryTool, MethodRegistryTool, GeoPlanValidatorTool
 
 __all__ = [
     # 搜索与阅读
@@ -26,4 +27,8 @@ __all__ = [
     # 辅助
     "NotepadTool",
     "NotepadEntry",
+    # GIS / remote-sensing structured tools
+    "DatasetRegistryTool",
+    "MethodRegistryTool",
+    "GeoPlanValidatorTool",
 ]

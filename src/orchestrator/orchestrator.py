@@ -30,6 +30,7 @@ from .agent_pool import AgentPool
 from ..planner.dag import DAG
 from ..planner.planner import Planner, PlanParseError
 from ..planner.budget_tracker import BudgetTracker
+from ..evidence import EvidenceStore
 from ..utils.tracing import trace_chain
 
 # M4: Memory Store 类型提示（延迟导入避免循环依赖）
@@ -67,6 +68,7 @@ class Orchestrator:
         self.adversarial_loop = adversarial_loop
         self.memory_store = memory_store
         self.summarizer_policy = summarizer_policy
+        self.evidence_store = EvidenceStore()
 
         # 运行时状态（保留 dict 作为快速缓存，M4 提供持久化 + 语义检索）
         self._memory_store: dict[str, Any] = {}
@@ -310,6 +312,7 @@ class Orchestrator:
         """
         # 将结果写入运行时 memory dict
         for r in self._results:
+            self.evidence_store.annotate_result(r, task=self._task_map.get(r.task_id))
             self._memory_store[f"result:{r.task_id}"] = r
 
         # M4: 将成功结果同步写入 SharedMemoryStore（持久化 + 向量索引）
@@ -347,7 +350,13 @@ class Orchestrator:
         try:
             # 延迟导入避免循环依赖
             from src.memory.long_term import MemoryEntry
-            claim_text = str(result.output)[:500]  # 取前 500 字作为 claim
+            evidence_items = result.evidence_items or self.evidence_store.build_evidence_items(
+                result, task=self._task_map.get(result.task_id)
+            )
+            result.evidence_items = evidence_items
+            primary_evidence = self._select_primary_evidence(evidence_items)
+            claim_text = primary_evidence.claim if primary_evidence else str(result.output)[:500]
+            memory_evidence_type = self._memory_evidence_type(primary_evidence)
             entry = MemoryEntry(
                 entry_id=result.task_id,
                 claim=claim_text,
@@ -355,16 +364,19 @@ class Orchestrator:
                 confidence=getattr(result, "confidence", 0.5),
                 agent_id=result.task_id,
                 timestamp=time.time(),
-                evidence_type="primary",
+                evidence_type=memory_evidence_type,
                 embedding=[],  # SharedMemoryStore.put() 会自动生成 embedding
                 topic=self._query[:50],
                 metadata={
                     "status": result.status.value,
                     "token_usage": getattr(result, "token_usage", 0),
+                    "evidence_items": [item.to_dict() for item in evidence_items],
+                    "evidence_level": primary_evidence.level.value if primary_evidence else "",
                 },
             )
             self.memory_store.put(entry)
-            print(f"[M4] Memory stored: {result.task_id} (claim={claim_text[:60]}...)")
+            level = primary_evidence.level.value if primary_evidence else "unknown"
+            print(f"[M4] Memory stored: {result.task_id} (evidence={level}, claim={claim_text[:60]}...)")
         except Exception as e:
             print(f"[M4] Failed to store memory for {result.task_id}: {e}")
 
@@ -382,6 +394,7 @@ class Orchestrator:
             "query": self._query,
             "results": self._results,
             "domain": getattr(self.planner, "domain", "general"),
+            "evidence_summary": self.evidence_store.summarize(self._results),
         }
 
         agent = await self.agent_pool.get_agent(TaskType.SYNTHESIS)
@@ -607,7 +620,36 @@ class Orchestrator:
             reasons.append(f"{timeout_count} tasks timed out (may need simpler queries or longer timeout)")
         if failed_count > 0:
             reasons.append(f"{failed_count} tasks failed with errors")
+        evidence_feedback = self.evidence_store.build_replan_feedback(results)
+        if evidence_feedback:
+            reasons.append(evidence_feedback)
         return "; ".join(reasons) if reasons else "Unknown failure"
+
+    def _memory_evidence_type(self, evidence) -> str:
+        """Map EvidenceLevel to legacy MemoryEntry.evidence_type values."""
+        if evidence is None:
+            return "inference"
+        level = evidence.level.value
+        if level == "verified":
+            return "primary"
+        if level == "evidence_backed":
+            return "secondary"
+        return "inference"
+
+    def _select_primary_evidence(self, evidence_items):
+        """Choose the best representative claim for memory retrieval."""
+        if not evidence_items:
+            return None
+        priority = {
+            "verified": 4,
+            "evidence_backed": 3,
+            "speculative": 2,
+            "rejected": 1,
+        }
+        return max(
+            evidence_items,
+            key=lambda item: priority.get(getattr(item.level, "value", ""), 0),
+        )
 
     def _rebuild_task_map_from_dag(self) -> dict[str, SubTask]:
         """从 DAG 重建 task_map（当缺少原始 SubTask 信息时使用占位符）。

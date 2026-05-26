@@ -48,6 +48,7 @@ class SummarizerAgent(BaseAgent):
         query = context.get("query", "")
         results: list[AgentResult] = context.get("results", [])
         domain = context.get("domain", "general")
+        evidence_summary = context.get("evidence_summary", {})
 
         if not results:
             report = ResearchReport(
@@ -65,7 +66,12 @@ class SummarizerAgent(BaseAgent):
             ))
 
         # 构建 synthesis prompt
-        prompt = self._build_synthesis_prompt(query, results, domain=domain)
+        prompt = self._build_synthesis_prompt(
+            query,
+            results,
+            domain=domain,
+            evidence_summary=evidence_summary,
+        )
         messages = [
             {"role": "system", "content": self._system_prompt(domain)},
             {"role": "user", "content": prompt},
@@ -135,7 +141,13 @@ class SummarizerAgent(BaseAgent):
             "At the end, provide an overall confidence score (0-1) and a summary of key sources."
         )
 
-    def _build_synthesis_prompt(self, query: str, results: list[AgentResult], domain: str = "general") -> str:
+    def _build_synthesis_prompt(
+        self,
+        query: str,
+        results: list[AgentResult],
+        domain: str = "general",
+        evidence_summary: dict | None = None,
+    ) -> str:
         """构建合成 prompt，按置信度降序排列结果。"""
         sorted_results = sorted(results, key=lambda r: r.confidence, reverse=True)
 
@@ -143,11 +155,15 @@ class SummarizerAgent(BaseAgent):
             f"# Research Question\n{query}\n",
             f"# Sub-task Results ({len(results)} total)\n",
         ]
+        if evidence_summary:
+            parts.append(self._format_evidence_summary(evidence_summary))
         for i, r in enumerate(sorted_results, 1):
             status_icon = "✓" if r.status == AgentStatus.SUCCESS else "✗"
+            evidence_block = self._format_result_evidence(r)
             parts.append(
                 f"## Result {i} [{status_icon}] (confidence: {r.confidence:.2f})\n"
                 f"Task: {r.task_id}\n"
+                f"{evidence_block}"
                 f"Output:\n{r.output}\n"
             )
 
@@ -184,6 +200,29 @@ class SummarizerAgent(BaseAgent):
                 "6. End with: Overall Confidence: X.XX"
             )
         return "\n".join(parts)
+
+    def _format_evidence_summary(self, evidence_summary: dict) -> str:
+        """Render evidence summary for the LLM prompt."""
+        counts = evidence_summary.get("counts", {})
+        if not counts:
+            return ""
+        lines = ["# Evidence Summary"]
+        for key in ("verified", "evidence_backed", "speculative", "rejected"):
+            lines.append(f"- {key}: {counts.get(key, 0)}")
+        return "\n".join(lines) + "\n"
+
+    def _format_result_evidence(self, result: AgentResult) -> str:
+        """Render per-result evidence items for synthesis."""
+        if not result.evidence_items:
+            return ""
+        lines = ["Evidence:"]
+        for item in result.evidence_items:
+            source = f" | source: {item.source}" if item.source else ""
+            lines.append(
+                f"- level={item.level.value}, confidence={item.confidence:.2f}{source}; "
+                f"rationale={item.rationale}"
+            )
+        return "\n".join(lines) + "\n"
 
     def _parse_report(self, query: str, content: str, results: list[AgentResult]) -> ResearchReport:
         """从 LLM 输出中解析 ResearchReport，并基于子任务成功率校准置信度。"""
@@ -248,10 +287,22 @@ class SummarizerAgent(BaseAgent):
             for r in results
         )
 
+        evidence_summary = self._summarize_result_evidence(results)
         return ResearchReport(
             query=query,
             content=content,
             sources=unique_sources,
             confidence=confidence,
             num_searches=num_searches,
+            evidence_summary=evidence_summary,
         )
+
+    def _summarize_result_evidence(self, results: list[AgentResult]) -> dict[str, Any]:
+        counts: dict[str, int] = {}
+        claims_by_level: dict[str, list[dict]] = {}
+        for result in results:
+            for item in result.evidence_items:
+                level = item.level.value
+                counts[level] = counts.get(level, 0) + 1
+                claims_by_level.setdefault(level, []).append(item.to_dict())
+        return {"counts": counts, "claims_by_level": claims_by_level}
