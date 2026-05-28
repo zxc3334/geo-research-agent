@@ -4,6 +4,7 @@ from __future__ import annotations
 from .web_search import WebSearchTool, MockWebSearchTool, OfficialSourceSearchTool, BaseWebSearchTool
 from .official_doc_fetcher import OfficialDocFetcherTool
 from .arxiv_reader import ArxivReaderTool
+from .paper_search import PaperSearchTool
 from .code_sandbox import CodeSandboxTool
 from .browser import BrowserTool, MockBrowserTool, BaseBrowserTool, get_browser_tool
 from .file_reader import FileReaderTool
@@ -19,6 +20,7 @@ __all__ = [
     "OfficialDocFetcherTool",
     "BaseWebSearchTool",
     "ArxivReaderTool",
+    "PaperSearchTool",
     "BrowserTool",
     "MockBrowserTool",
     "BaseBrowserTool",

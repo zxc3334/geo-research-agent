@@ -82,6 +82,7 @@ def _create_tools_factory(config: dict):
         OfficialSourceSearchTool,
         OfficialDocFetcherTool,
         ArxivReaderTool,
+        PaperSearchTool,
         BrowserTool,
         MockBrowserTool,
         FileReaderTool,
@@ -114,7 +115,13 @@ def _create_tools_factory(config: dict):
     else:
         tools["browser"] = BrowserTool()
 
-    # 3. arxiv_reader
+    # 3. Academic literature tools
+    paper_cfg = tools_cfg.get("paper_search", {})
+    if paper_cfg.get("enabled", True):
+        tools["paper_search"] = PaperSearchTool(
+            backend=paper_cfg.get("backend", "openalex"),
+            use_mock=mock_mode,
+        )
     tools["arxiv_reader"] = ArxivReaderTool(use_mock=mock_mode)
 
     # 4. file_reader（不限制目录）

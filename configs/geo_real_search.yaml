@@ -109,6 +109,9 @@ tools:
   official_doc_fetcher:
     enabled: true
     timeout_seconds: 20
+  paper_search:
+    enabled: true
+    backend: "openalex"
   arxiv_reader:
     enabled: true
     max_papers: 3

@@ -241,6 +241,8 @@ class EvidenceStore:
             return "official_search"
         if tool_name == "official_doc_fetcher" or payload.get("source_type") == "official_doc":
             return "official_doc"
+        if tool_name == "paper_search" or payload.get("source_type") == "academic_paper":
+            return "academic_paper"
         registry_type = payload.get("registry_type")
         if registry_type == "geo_plan_validation" or str(source).startswith("geo-registry://"):
             return "registry_heuristic"
@@ -272,6 +274,11 @@ class EvidenceStore:
             return EvidenceLevel.EVIDENCE_BACKED
 
         if tool_name == "official_doc_fetcher" or payload.get("source_type") == "official_doc":
+            if level == EvidenceLevel.VERIFIED:
+                return EvidenceLevel.EVIDENCE_BACKED
+            return level
+
+        if tool_name == "paper_search" or payload.get("source_type") == "academic_paper":
             if level == EvidenceLevel.VERIFIED:
                 return EvidenceLevel.EVIDENCE_BACKED
             return level
@@ -365,6 +372,39 @@ class EvidenceStore:
                             "match_count": payload.get("match_count", 0),
                             "has_query_match": has_query_match,
                             "snippets": snippets[:3],
+                        },
+                    ))
+                continue
+
+            if (tool_name == "paper_search" or payload.get("source_type") == "academic_paper") and isinstance(payload.get("papers"), list):
+                raw_level = self._normalize_level(payload.get("evidence_level"))
+                for paper in payload["papers"]:
+                    if not isinstance(paper, dict):
+                        continue
+                    source = paper.get("url", "") or paper.get("pdf_url", "")
+                    level = self._cap_structured_level(raw_level, tool_name, payload, source=source)
+                    title = str(paper.get("title", "") or "Academic paper")
+                    summary = str(paper.get("summary", "") or "")
+                    citation_count = paper.get("citation_count")
+                    citation_note = f" citation_count={citation_count}." if citation_count is not None else ""
+                    items.append(EvidenceItem(
+                        claim=self._claim_from_output(f"{title}. {summary}"),
+                        level=level if source else EvidenceLevel.SPECULATIVE,
+                        source=source,
+                        rationale=f"Academic literature search result from {paper.get('source', payload.get('backend', 'unknown'))}.{citation_note}",
+                        task_id=result.task_id,
+                        confidence=result.confidence,
+                        metadata={
+                            "tool": tool_name,
+                            "task_type": task_type,
+                            "status": result.status.value,
+                            "source_type": "academic_paper",
+                            "paper_id": paper.get("id", ""),
+                            "title": title,
+                            "authors": paper.get("authors", []),
+                            "published": paper.get("published", ""),
+                            "citation_count": citation_count,
+                            "backend": payload.get("backend", ""),
                         },
                     ))
                 continue

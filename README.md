@@ -176,6 +176,7 @@ model:
 
 - `official_source_search`：优先检索 ESA、USGS、NASA、Copernicus、GEE、Microsoft Planetary Computer 等官方来源。
 - `official_doc_fetcher`：读取官方 URL 正文，抽取和 query 匹配的证据片段。该工具不需要 API key，但只允许访问官方域名 allowlist，避免把普通网页误当作强证据。
+- `paper_search`：通过 OpenAlex / Semantic Scholar / ArXiv 检索学术论文。默认 OpenAlex，不需要 API key，用于方法依据、公式来源、适用性限制和引用证据。
 
 当前需要填写的外部搜索 key 仍然是 `.env.local` 中的搜索服务 key，例如 `BOCHA_API_KEY`、`SERPAPI_KEY`、`BING_SEARCH_KEY` 或 `METASO_API_KEY`。`official_doc_fetcher` 本身不新增密钥要求。
 

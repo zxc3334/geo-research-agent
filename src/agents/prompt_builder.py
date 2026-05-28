@@ -18,8 +18,9 @@ class ResearchPromptBuilder:
             "  USE for ESA/USGS/NASA/Copernicus/GEE product specs, sensor bands, algorithms, and official data access facts.\n"
             "- official_doc_fetcher: Fetch and read an official documentation URL returned by official_source_search. "
             "  USE to turn an official URL into page-grounded evidence snippets.\n"
-            "- arxiv_reader: Academic paper search (ArXiv / Semantic Scholar). "
-            "  USE when the task involves: papers, publications, academic research, citation counts.\n"
+            "- paper_search: Academic paper search through OpenAlex/Semantic Scholar/ArXiv. "
+            "  USE for GIS/RS methods, formulas, peer-reviewed evidence, publications, and citation counts.\n"
+            "- arxiv_reader: Legacy academic paper search. Prefer paper_search for new GIS/RS tasks.\n"
             "- browser: Open a URL and extract full webpage text. "
             "  USE after web_search when search results are too short and you need to read the original article in depth.\n"
             "- code_sandbox: Execute Python code for calculations, data processing, simulations. "
@@ -41,7 +42,7 @@ class ResearchPromptBuilder:
             "2. Choose the RIGHT tool based on the task type. You can use MULTIPLE tools in sequence.\n"
             "3. For GIS/remote-sensing factual validation, START with official_source_search or a GIS registry tool. "
             "If you get an official URL, use official_doc_fetcher to read it before finalizing the claim. "
-            "For general tasks, START with web_search or arxiv_reader.\n"
+            "For academic method evidence, use paper_search. For general tasks, START with web_search.\n"
             "4. If search results are too short, use browser to read the full article.\n"
             "5. If the task involves numbers/calculations, use calculator or code_sandbox.\n"
             "6. You may call tools AT MOST 2 times total. After that you MUST summarize.\n"
@@ -68,7 +69,7 @@ class ResearchPromptBuilder:
 
         academic_keywords = ["论文", "paper", "publication", "学术", "arxiv", "neurips", "icml", "iclr", "scholar", "citation", "文献"]
         if any(kw in desc_lower for kw in academic_keywords):
-            tool_recommendations.append("arxiv_reader")
+            tool_recommendations.append("paper_search")
 
         official_keywords = [
             "official", "documentation", "docs", "handbook", "user guide",
@@ -121,8 +122,8 @@ class ResearchPromptBuilder:
             tool_recommendations = ["dataset_registry"] + [t for t in tool_recommendations if t != "dataset_registry"]
         elif "method_registry" in tool_recommendations:
             tool_recommendations = ["method_registry"] + [t for t in tool_recommendations if t != "method_registry"]
-        elif "arxiv_reader" in tool_recommendations:
-            tool_recommendations = ["arxiv_reader"] + [t for t in tool_recommendations if t != "arxiv_reader"]
+        elif "paper_search" in tool_recommendations:
+            tool_recommendations = ["paper_search"] + [t for t in tool_recommendations if t != "paper_search"]
         elif not tool_recommendations:
             tool_recommendations.insert(0, "web_search")
 
