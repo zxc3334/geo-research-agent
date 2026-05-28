@@ -80,6 +80,7 @@ def _create_tools_factory(config: dict):
         WebSearchTool,
         MockWebSearchTool,
         OfficialSourceSearchTool,
+        OfficialDocFetcherTool,
         ArxivReaderTool,
         BrowserTool,
         MockBrowserTool,
@@ -100,6 +101,12 @@ def _create_tools_factory(config: dict):
     else:
         tools["web_search"] = WebSearchTool()
         tools["official_source_search"] = OfficialSourceSearchTool()
+        doc_fetcher_cfg = tools_cfg.get("official_doc_fetcher", {})
+        if doc_fetcher_cfg.get("enabled", True):
+            tools["official_doc_fetcher"] = OfficialDocFetcherTool(
+                allowed_domains=doc_fetcher_cfg.get("allowed_domains"),
+                timeout_seconds=doc_fetcher_cfg.get("timeout_seconds", 20),
+            )
 
     # 2. browser
     if mock_mode:

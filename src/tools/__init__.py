@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from .web_search import WebSearchTool, MockWebSearchTool, OfficialSourceSearchTool, BaseWebSearchTool
+from .official_doc_fetcher import OfficialDocFetcherTool
 from .arxiv_reader import ArxivReaderTool
 from .code_sandbox import CodeSandboxTool
 from .browser import BrowserTool, MockBrowserTool, BaseBrowserTool, get_browser_tool
@@ -15,6 +16,7 @@ __all__ = [
     "WebSearchTool",
     "MockWebSearchTool",
     "OfficialSourceSearchTool",
+    "OfficialDocFetcherTool",
     "BaseWebSearchTool",
     "ArxivReaderTool",
     "BrowserTool",

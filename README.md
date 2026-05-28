@@ -170,6 +170,15 @@ model:
 - `module_profiles`：决定 `planner / solver / summarizer / compressor` 分别使用哪个 profile。
 - 旧的 `backend / backend_sampling / backend_mapping` 仍兼容，但新配置优先使用上述命名。
 
+## M7 外部证据工具
+
+真实搜索配置 `configs/geo_real_search.yaml` 会启用：
+
+- `official_source_search`：优先检索 ESA、USGS、NASA、Copernicus、GEE、Microsoft Planetary Computer 等官方来源。
+- `official_doc_fetcher`：读取官方 URL 正文，抽取和 query 匹配的证据片段。该工具不需要 API key，但只允许访问官方域名 allowlist，避免把普通网页误当作强证据。
+
+当前需要填写的外部搜索 key 仍然是 `.env.local` 中的搜索服务 key，例如 `BOCHA_API_KEY`、`SERPAPI_KEY`、`BING_SEARCH_KEY` 或 `METASO_API_KEY`。`official_doc_fetcher` 本身不新增密钥要求。
+
 ## Baseline 运行
 
 当前 baseline 使用 mock search，目的是验证主流程，而不是生成真实证据报告。

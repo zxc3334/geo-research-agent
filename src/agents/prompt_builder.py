@@ -16,6 +16,8 @@ class ResearchPromptBuilder:
             "  Use this as the FIRST tool for most tasks.\n"
             "- official_source_search: Official GIS/remote-sensing documentation search. "
             "  USE for ESA/USGS/NASA/Copernicus/GEE product specs, sensor bands, algorithms, and official data access facts.\n"
+            "- official_doc_fetcher: Fetch and read an official documentation URL returned by official_source_search. "
+            "  USE to turn an official URL into page-grounded evidence snippets.\n"
             "- arxiv_reader: Academic paper search (ArXiv / Semantic Scholar). "
             "  USE when the task involves: papers, publications, academic research, citation counts.\n"
             "- browser: Open a URL and extract full webpage text. "
@@ -38,6 +40,7 @@ class ResearchPromptBuilder:
             "1. You MUST use a tool to find factual information. Do NOT answer from your own knowledge.\n"
             "2. Choose the RIGHT tool based on the task type. You can use MULTIPLE tools in sequence.\n"
             "3. For GIS/remote-sensing factual validation, START with official_source_search or a GIS registry tool. "
+            "If you get an official URL, use official_doc_fetcher to read it before finalizing the claim. "
             "For general tasks, START with web_search or arxiv_reader.\n"
             "4. If search results are too short, use browser to read the full article.\n"
             "5. If the task involves numbers/calculations, use calculator or code_sandbox.\n"
@@ -74,6 +77,7 @@ class ResearchPromptBuilder:
         ]
         if any(kw in desc_lower for kw in official_keywords):
             tool_recommendations.append("official_source_search")
+            tool_recommendations.append("official_doc_fetcher")
 
         calc_keywords = ["计算", "flops", "显存", "内存", "参数量", "延迟", "成本", "公式", "数值", "统计", "数学", "公式", "推导"]
         if any(kw in desc_lower for kw in calc_keywords):

@@ -106,6 +106,9 @@ tools:
     mock_mode: false
     max_results: 5
     snippet_max_tokens: 256
+  official_doc_fetcher:
+    enabled: true
+    timeout_seconds: 20
   arxiv_reader:
     enabled: true
     max_papers: 3

@@ -239,6 +239,8 @@ class EvidenceStore:
             return explicit
         if tool_name == "official_source_search":
             return "official_search"
+        if tool_name == "official_doc_fetcher" or payload.get("source_type") == "official_doc":
+            return "official_doc"
         registry_type = payload.get("registry_type")
         if registry_type == "geo_plan_validation" or str(source).startswith("geo-registry://"):
             return "registry_heuristic"
@@ -268,6 +270,11 @@ class EvidenceStore:
 
         if tool_name == "official_source_search" and level == EvidenceLevel.VERIFIED:
             return EvidenceLevel.EVIDENCE_BACKED
+
+        if tool_name == "official_doc_fetcher" or payload.get("source_type") == "official_doc":
+            if level == EvidenceLevel.VERIFIED:
+                return EvidenceLevel.EVIDENCE_BACKED
+            return level
 
         return level
 
@@ -316,6 +323,52 @@ class EvidenceStore:
                 continue
 
             registry_type = payload.get("registry_type")
+            if (tool_name == "official_doc_fetcher" or payload.get("source_type") == "official_doc") and isinstance(payload.get("results"), list):
+                raw_level = self._normalize_level(payload.get("evidence_level"))
+                for record in payload["results"]:
+                    if not isinstance(record, dict):
+                        continue
+                    snippets = record.get("snippets") if isinstance(record.get("snippets"), list) else []
+                    has_query_match = bool(payload.get("match_count", 0)) or any(
+                        isinstance(snippet, dict) and snippet.get("match_score", 0) > 0
+                        for snippet in snippets
+                    )
+                    source = record.get("url", "")
+                    base_level = self._cap_structured_level(raw_level, tool_name, payload, source=source)
+                    if task and task.task_type in (TaskType.VERIFY, TaskType.GEO_VALIDATION) and has_query_match and result.confidence >= 0.7:
+                        level = EvidenceLevel.VERIFIED
+                    else:
+                        level = base_level if has_query_match else EvidenceLevel.SPECULATIVE
+                    if snippets:
+                        claim = str(snippets[0].get("text", "") or record.get("snippet", "") or record.get("title", ""))
+                    else:
+                        claim = str(record.get("snippet", "") or record.get("title", "") or "Official document fetched without query match.")
+                    items.append(EvidenceItem(
+                        claim=self._claim_from_output(claim),
+                        level=level,
+                        source=source,
+                        rationale=(
+                            "Fetched official documentation page and extracted query-matched snippets."
+                            if snippets else
+                            "Fetched official documentation page, but no query-matched snippet was found."
+                        ),
+                        task_id=result.task_id,
+                        confidence=result.confidence,
+                        metadata={
+                            "tool": tool_name,
+                            "task_type": task_type,
+                            "status": result.status.value,
+                            "source_type": "official_doc",
+                            "title": record.get("title", ""),
+                            "official_domain": record.get("official_domain", ""),
+                            "content_chars": record.get("content_chars", 0),
+                            "match_count": payload.get("match_count", 0),
+                            "has_query_match": has_query_match,
+                            "snippets": snippets[:3],
+                        },
+                    ))
+                continue
+
             if registry_type in ("dataset", "method") and isinstance(payload.get("results"), list):
                 raw_level = self._normalize_level(payload.get("evidence_level"))
                 for record in payload["results"]:
