@@ -10,7 +10,8 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-from ..orchestrator.schemas import AgentResult, AgentStatus, EvidenceItem, EvidenceLevel, SubTask, TaskType
+from ..orchestrator.schemas import AgentResult, AgentStatus, EvidenceItem, EvidenceLevel, SourceTier, SubTask, TaskType
+from ..utils.domain_tiers import classify_url, best_tier
 
 
 class EvidenceStore:
@@ -55,13 +56,16 @@ class EvidenceStore:
         sources = sources or []
         if level is None or rationale is None:
             level, rationale = self.classify(result, sources=sources, task=task)
+        best_tier = self._best_source_tier(sources)
         return EvidenceItem(
             claim=self._claim_from_output(result.output),
             level=level,
+            source_tier=best_tier,
             source=source,
             rationale=rationale,
             task_id=result.task_id,
             confidence=result.confidence,
+            source_count=len(sources),
             metadata={
                 "sources": sources,
                 "source_count": len(sources),
@@ -76,37 +80,126 @@ class EvidenceStore:
         sources: list[dict[str, Any]] | None = None,
         task: SubTask | None = None,
     ) -> tuple[EvidenceLevel, str]:
-        """Assign an evidence level using execution status, tool evidence, and task type."""
+        """Assign an evidence level using execution status, source quality, and consensus.
+
+        Classification order:
+        1. Failed / timeout  → REJECTED
+        2. Structured tool explicit level (capped by provenance)
+        3. Output text rejection markers  → REJECTED
+        4. Source-tier-aware external evidence + optional consensus boost
+        5. Mock sources  → SPECULATIVE
+        6. Fallback  → SPECULATIVE
+        """
         sources = sources or []
         output_text = str(result.output or "").lower()
 
+        # 1. Hard failure.
         if result.status in (AgentStatus.FAILED, AgentStatus.TIMEOUT):
             return EvidenceLevel.REJECTED, f"Task ended with status={result.status.value}."
 
+        # 2. Structured tool explicit level.
         tool_level = self._level_from_structured_tool(result, sources=sources)
         if tool_level is not None:
             return tool_level, "Structured tool evidence level was capped by source provenance."
 
+        # 3. Output text rejection markers.
         if self._looks_rejected(output_text):
             return EvidenceLevel.REJECTED, "Output explicitly states that the claim is unsupported or the tool failed."
 
-        has_external_sources = any(not self._is_mock_source(src) for src in sources)
-        has_mock_sources = any(self._is_mock_source(src) for src in sources)
+        # 4. External sources — use source tier + consensus.
+        non_mock_sources = [s for s in sources if not self._is_mock_source(s)]
         is_validation_task = bool(task and task.task_type in (TaskType.VERIFY, TaskType.GEO_VALIDATION))
 
-        if is_validation_task and has_external_sources and result.confidence >= 0.7:
-            return EvidenceLevel.VERIFIED, "Validation task succeeded with external source evidence."
+        if non_mock_sources:
+            best_tier = self._best_source_tier(non_mock_sources)
+            consensus = self._check_consensus(result)
 
-        if has_external_sources:
-            return EvidenceLevel.EVIDENCE_BACKED, "Result is supported by external tool/search evidence."
+            # Validation task + high-quality source + high confidence → VERIFIED.
+            if is_validation_task and result.confidence >= 0.7 and best_tier in (SourceTier.OFFICIAL, SourceTier.ACADEMIC):
+                return EvidenceLevel.VERIFIED, (
+                    f"Validation task with {best_tier.value}-tier source evidence (confidence={result.confidence:.2f})."
+                )
 
+            # Multi-source consensus → upgrade to VERIFIED.
+            if consensus >= 2:
+                return EvidenceLevel.VERIFIED, (
+                    f"Cross-source consensus: {consensus} independent sources agree."
+                )
+
+            # High-quality source → EVIDENCE_BACKED.
+            if best_tier in (SourceTier.OFFICIAL, SourceTier.ACADEMIC):
+                return EvidenceLevel.EVIDENCE_BACKED, (
+                    f"Supported by {best_tier.value}-tier source, but not cross-validated."
+                )
+
+            # Authoritative source → EVIDENCE_BACKED (lower confidence).
+            if best_tier == SourceTier.AUTHORITATIVE:
+                return EvidenceLevel.EVIDENCE_BACKED, (
+                    f"Supported by {best_tier.value}-tier source; treat with caution."
+                )
+
+            # General / low-quality source → SPECULATIVE (was EVIDENCE_BACKED before).
+            return EvidenceLevel.SPECULATIVE, (
+                f"Source quality is {best_tier.value}; external verification is recommended."
+            )
+
+        # 5. Mock sources.
+        has_mock_sources = any(self._is_mock_source(src) for src in sources)
         if has_mock_sources:
             return EvidenceLevel.SPECULATIVE, "Result used mock sources, so it is useful for workflow testing but not real evidence."
 
+        # 6. Validation task without sources.
         if is_validation_task and result.confidence >= 0.7:
             return EvidenceLevel.SPECULATIVE, "Validation-style task succeeded, but no source evidence was available."
 
+        # 7. Fallback.
         return EvidenceLevel.SPECULATIVE, "No external evidence source was found in the tool trajectory."
+
+    def _check_consensus(self, result: AgentResult) -> int:
+        """Count how many distinct source domains support the same result.
+
+        Returns the number of unique non-mock source domains found across all
+        tool calls in this result's trajectory.  When ≥ 2, the claim has
+        cross-source consensus and can be promoted toward VERIFIED.
+        """
+        domains: set[str] = set()
+        for step in result.trajectory:
+            if step.get("role") != "tool":
+                continue
+            payload = step.get("result")
+            if not isinstance(payload, dict):
+                continue
+            # Collect URLs from results lists.
+            for item in payload.get("results", []) or []:
+                if isinstance(item, dict):
+                    url = item.get("url", "")
+                    if url and not self._is_mock_source(item):
+                        domain = self._extract_domain(url)
+                        if domain:
+                            domains.add(domain)
+            # Collect URLs from papers lists.
+            for paper in payload.get("papers", []) or []:
+                if isinstance(paper, dict):
+                    url = paper.get("pdf_url", "") or paper.get("url", "")
+                    if url:
+                        domain = self._extract_domain(url)
+                        if domain:
+                            domains.add(domain)
+        return len(domains)
+
+    def _extract_domain(self, url: str) -> str:
+        """Extract the registrable domain from a URL for consensus dedup."""
+        from urllib.parse import urlparse
+        try:
+            hostname = urlparse(url).hostname or ""
+        except Exception:
+            return ""
+        hostname = hostname.lower().lstrip("www.")
+        # Keep two levels: e.g. "nasa.gov", "arxiv.org"
+        parts = hostname.split(".")
+        if len(parts) >= 2:
+            return ".".join(parts[-2:])
+        return hostname
 
     def summarize(self, results: list[AgentResult]) -> dict[str, Any]:
         """Group evidence counts and claims by evidence level."""
@@ -170,6 +263,8 @@ class EvidenceStore:
                             "url": item.get("url", ""),
                             "title": item.get("title", ""),
                             "snippet": item.get("snippet", ""),
+                            "_quality_score": item.get("_quality_score"),
+                            "_source_tier": item.get("_source_tier"),
                         })
 
             if isinstance(payload.get("papers"), list):
@@ -224,6 +319,14 @@ class EvidenceStore:
     def _is_external_url(self, source: str) -> bool:
         normalized = str(source or "").lower()
         return normalized.startswith("http://") or normalized.startswith("https://")
+
+    def classify_source_tier(self, url: str) -> SourceTier:
+        """Classify a URL into a source quality tier (delegates to shared module)."""
+        return classify_url(url)
+
+    def _best_source_tier(self, sources: list[dict[str, Any]]) -> SourceTier:
+        """Return the highest-quality tier among a list of sources (delegates to shared module)."""
+        return best_tier([s.get("url", "") for s in sources])
 
     def _structured_source_type(
         self,
@@ -312,6 +415,7 @@ class EvidenceStore:
                     items.append(EvidenceItem(
                         claim=str(check.get("claim", "") or "Structured validation check"),
                         level=level,
+                        source_tier=self.classify_source_tier(source),
                         source=source,
                         rationale=rationale,
                         task_id=result.task_id,
@@ -353,6 +457,7 @@ class EvidenceStore:
                     items.append(EvidenceItem(
                         claim=self._claim_from_output(claim),
                         level=level,
+                        source_tier=self.classify_source_tier(source),
                         source=source,
                         rationale=(
                             "Fetched official documentation page and extracted query-matched snippets."
@@ -390,6 +495,7 @@ class EvidenceStore:
                     items.append(EvidenceItem(
                         claim=self._claim_from_output(f"{title}. {summary}"),
                         level=level if source else EvidenceLevel.SPECULATIVE,
+                        source_tier=SourceTier.ACADEMIC if source else SourceTier.UNVERIFIED,
                         source=source,
                         rationale=f"Academic literature search result from {paper.get('source', payload.get('backend', 'unknown'))}.{citation_note}",
                         task_id=result.task_id,
@@ -430,6 +536,7 @@ class EvidenceStore:
                     items.append(EvidenceItem(
                         claim=str(claim),
                         level=level,
+                        source_tier=self.classify_source_tier(source) if self._is_external_url(source) else SourceTier.UNVERIFIED,
                         source=source,
                         rationale=rationale,
                         task_id=result.task_id,

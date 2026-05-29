@@ -16,6 +16,7 @@ __all__ = [
     "TaskType",
     "AgentStatus",
     "EvidenceLevel",
+    "SourceTier",
     "EvidenceItem",
     "SubTask",
     "AgentResult",
@@ -69,7 +70,7 @@ class AgentStatus(Enum):
 
 
 class EvidenceLevel(Enum):
-    """Evidence-aware claim level.
+    """Evidence-aware claim level (verification status).
 
     VERIFIED: explicitly validated by a validation task or strong source-backed check.
     EVIDENCE_BACKED: supported by tool/search/source evidence but not fully validated.
@@ -82,6 +83,26 @@ class EvidenceLevel(Enum):
     REJECTED = "rejected"
 
 
+class SourceTier(Enum):
+    """Source quality tier (separate from verification status).
+
+    A claim can have a high SourceTier (official docs) but still be SPECULATIVE
+    if it has not been cross-validated, or a low SourceTier (blog) but be
+    VERIFIED if multiple independent sources agree.
+
+    OFFICIAL:      government / space agency official documentation (NASA, ESA, USGS, Copernicus).
+    ACADEMIC:      peer-reviewed papers, arXiv pre-prints with DOIs.
+    AUTHORITATIVE: well-known institutions, standards bodies, reputable encyclopedias.
+    GENERAL:       ordinary web pages, blogs, forums, Stack Overflow.
+    UNVERIFIED:    no identifiable source or source could not be classified.
+    """
+    OFFICIAL = "official"
+    ACADEMIC = "academic"
+    AUTHORITATIVE = "authoritative"
+    GENERAL = "general"
+    UNVERIFIED = "unverified"
+
+
 # ============================================================================
 # 数据类定义
 # ============================================================================
@@ -92,19 +113,23 @@ class EvidenceItem:
 
     Attributes:
         claim: Claim text extracted from an agent output.
-        level: Evidence confidence level.
+        level: Evidence verification status.
+        source_tier: Quality tier of the source (independent of verification).
         source: Source identifier or URL. Empty when no external source exists.
         rationale: Why this level was assigned.
         task_id: Source task id.
         confidence: Claim confidence [0.0, 1.0].
+        source_count: Number of independent sources supporting this claim.
         metadata: Flexible evidence details, e.g. URLs or tool names.
     """
     claim: str
     level: EvidenceLevel
+    source_tier: SourceTier = SourceTier.UNVERIFIED
     source: str = ""
     rationale: str = ""
     task_id: str = ""
     confidence: float = 0.0
+    source_count: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -112,10 +137,12 @@ class EvidenceItem:
         return {
             "claim": self.claim,
             "level": self.level.value,
+            "source_tier": self.source_tier.value,
             "source": self.source,
             "rationale": self.rationale,
             "task_id": self.task_id,
             "confidence": self.confidence,
+            "source_count": self.source_count,
             "metadata": self.metadata,
         }
 

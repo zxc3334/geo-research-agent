@@ -72,7 +72,11 @@ def load_config(config_path: str | None = None) -> dict:
 # 工具工厂
 # ---------------------------------------------------------------------------
 def _create_tools_factory(config: dict):
-    """创建工具工厂函数，返回 Agent 可用的工具列表。"""
+    """创建工具工厂函数，返回 Agent 可用的工具列表。
+
+    只注册实际可用的工具。被注释掉的工具（browser, code_sandbox, arxiv_reader）
+    在当前场景下未被 Agent 调用，移除以减少 prompt 噪音。
+    """
     tools_cfg = config.get("tools", {})
     mock_mode = tools_cfg.get("web_search", {}).get("mock_mode", True)
 
@@ -81,12 +85,8 @@ def _create_tools_factory(config: dict):
         MockWebSearchTool,
         OfficialSourceSearchTool,
         OfficialDocFetcherTool,
-        ArxivReaderTool,
         PaperSearchTool,
-        BrowserTool,
-        MockBrowserTool,
         FileReaderTool,
-        CodeSandboxTool,
         CalculatorTool,
         NotepadTool,
         DatasetRegistryTool,
@@ -96,7 +96,7 @@ def _create_tools_factory(config: dict):
 
     tools = {}
 
-    # 1. web_search
+    # 1. Search tools
     if mock_mode:
         tools["web_search"] = MockWebSearchTool()
     else:
@@ -109,41 +109,26 @@ def _create_tools_factory(config: dict):
                 timeout_seconds=doc_fetcher_cfg.get("timeout_seconds", 20),
             )
 
-    # 2. browser
-    if mock_mode:
-        tools["browser"] = MockBrowserTool()
-    else:
-        tools["browser"] = BrowserTool()
-
-    # 3. Academic literature tools
+    # 2. Academic literature
     paper_cfg = tools_cfg.get("paper_search", {})
     if paper_cfg.get("enabled", True):
         tools["paper_search"] = PaperSearchTool(
             backend=paper_cfg.get("backend", "openalex"),
             use_mock=mock_mode,
         )
-    tools["arxiv_reader"] = ArxivReaderTool(use_mock=mock_mode)
 
-    # 4. file_reader（不限制目录）
+    # 3. Utility tools
+    tools["calculator"] = CalculatorTool()
+    tools["notepad"] = NotepadTool()
     tools["file_reader"] = FileReaderTool(allowed_base_dir=None)
 
-    # 5. code_sandbox
-    tools["code_sandbox"] = CodeSandboxTool(use_mock=mock_mode)
-
-    # 6. calculator
-    tools["calculator"] = CalculatorTool()
-
-    # 7. notepad
-    tools["notepad"] = NotepadTool()
-
-    # 8. GIS / remote-sensing structured registry tools
+    # 4. GIS / remote-sensing structured registry tools
     geo_tools_cfg = tools_cfg.get("geo_registry", {})
     if geo_tools_cfg.get("enabled", False):
         tools["dataset_registry"] = DatasetRegistryTool()
         tools["method_registry"] = MethodRegistryTool()
         tools["geo_plan_validator"] = GeoPlanValidatorTool()
 
-    # 返回列表形式（AgentPool 和 Agent 构造函数需要 list）
     return list(tools.values())
 
 

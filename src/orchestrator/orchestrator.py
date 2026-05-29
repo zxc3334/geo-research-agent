@@ -375,10 +375,12 @@ class Orchestrator:
                         "evidence_item",
                         task_id=r.task_id,
                         level=item.level.value,
+                        source_tier=getattr(item, "source_tier", None) and item.source_tier.value,
                         claim=item.claim,
                         source=item.source,
                         rationale=item.rationale,
                         confidence=item.confidence,
+                        source_count=getattr(item, "source_count", 0),
                         source_type=item.metadata.get("source_type", ""),
                         metadata=item.metadata,
                     )

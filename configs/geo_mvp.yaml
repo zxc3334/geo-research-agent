@@ -60,7 +60,7 @@ agents:
   researcher:
     tool_loop:
       max_turns: 10
-      max_tool_calls_before_summary: 2
+      max_tool_calls_before_summary: 3
       context_budget_tokens: 12000
       compact_threshold_ratio: 0.70
       compact_tool_result_chars: 4000

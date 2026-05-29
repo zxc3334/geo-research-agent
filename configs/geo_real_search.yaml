@@ -11,29 +11,29 @@ system:
 model:
   default_profile: "solver"
   providers:
-    deepseek:
+    mimo:
       adapter: "openai_compatible"
-      env_prefix: "DEEPSEEK"
-      default_model: "deepseek-chat"
-      default_base_url: "https://api.deepseek.com/v1"
+      env_prefix: "MIMO"
+      default_model: "mimo-v2.5-pro"
+      default_base_url: "https://token-plan-sgp.xiaomimimo.com/v1"
   profiles:
     planner:
-      provider: "deepseek"
+      provider: "mimo"
       temperature: 0.2
       top_p: 1.0
       max_tokens: 4096
     solver:
-      provider: "deepseek"
+      provider: "mimo"
       temperature: 0.5
       top_p: 1.0
       max_tokens: 2048
     summarizer:
-      provider: "deepseek"
+      provider: "mimo"
       temperature: 0.4
       top_p: 1.0
       max_tokens: 4096
     compressor:
-      provider: "deepseek"
+      provider: "mimo"
       temperature: 0.1
       top_p: 1.0
       max_tokens: 1024
@@ -60,7 +60,7 @@ agents:
   researcher:
     tool_loop:
       max_turns: 10
-      max_tool_calls_before_summary: 2
+      max_tool_calls_before_summary: 3
       context_budget_tokens: 12000
       compact_threshold_ratio: 0.70
       compact_tool_result_chars: 4000

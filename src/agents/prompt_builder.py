@@ -1,194 +1,251 @@
-"""Prompt builders for executable agents."""
+"""PromptBuilder — pipe-based prompt construction with cache-friendly layout.
+
+Design principles:
+  1. Static sections first (identity, rules, tool guide) → better LLM cache hit
+  2. Dynamic sections after (task context, memory, search hints) → per-request
+  3. Each pipe is a factory function returning a PipeFn
+  4. PipeFn returns str (include) or None (skip)
+  5. Chainable builder with debug support
+
+Usage:
+    prompt = (PromptBuilder()
+        .pipe("identity", identity_section())
+        .pipe("rules", system_rules())
+        .pipe("tools", tool_guide(tool_names))
+        .pipe("task_context", task_context(task, context))
+        .build())
+"""
 from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Callable, Protocol
 
 from ..orchestrator.schemas import SubTask
 
 
-class ResearchPromptBuilder:
-    """Build system and user prompts for ResearcherAgent tasks."""
+# ── Types ────────────────────────────────────────────────────────────
 
-    def system_prompt(self) -> str:
-        return (
-            "You are a meticulous research assistant. "
-            "Your job is to gather and analyze information using the RIGHT tool for each task. "
-            "\n\nAVAILABLE TOOLS:\n"
-            "- web_search: General web search for news, market data, industry reports, current events. "
-            "  Use this as the FIRST tool for most tasks.\n"
-            "- official_source_search: Official GIS/remote-sensing documentation search. "
-            "  USE for ESA/USGS/NASA/Copernicus/GEE product specs, sensor bands, algorithms, and official data access facts.\n"
-            "- official_doc_fetcher: Fetch and read an official documentation URL returned by official_source_search. "
-            "  USE to turn an official URL into page-grounded evidence snippets.\n"
-            "- paper_search: Academic paper search through OpenAlex/Semantic Scholar/ArXiv. "
-            "  USE for GIS/RS methods, formulas, peer-reviewed evidence, publications, and citation counts.\n"
-            "- arxiv_reader: Legacy academic paper search. Prefer paper_search for new GIS/RS tasks.\n"
-            "- browser: Open a URL and extract full webpage text. "
-            "  USE after web_search when search results are too short and you need to read the original article in depth.\n"
-            "- code_sandbox: Execute Python code for calculations, data processing, simulations. "
-            "  USE when the task requires: computing FLOPs, memory usage, statistical analysis, data transformation.\n"
-            "- calculator: Quick math evaluation (+, -, *, /, sqrt, log, mean, etc.). "
-            "  USE for simple calculations instead of code_sandbox.\n"
-            "- notepad: Write/read intermediate notes to avoid forgetting findings during multi-step research. "
-            "  USE to record key numbers, conclusions, or next search queries.\n"
-            "- file_reader: Read local files (.txt/.md/.pdf/.csv/.json/.docx). "
-            "  USE only when the task explicitly references a local file path.\n"
-            "- dataset_registry: Curated GIS/remote-sensing dataset facts. "
-            "  USE for sensors, bands, spatial/temporal resolution, and dataset limitations.\n"
-            "- method_registry: Curated GIS/remote-sensing method facts. "
-            "  USE for formulas, required inputs, valid use cases, and limitations.\n"
-            "- geo_plan_validator: Deterministic GIS/remote-sensing compatibility validator. "
-            "  USE for checking whether a dataset-method workflow is valid.\n"
-            "\nIMPORTANT RULES:\n"
-            "1. You MUST use a tool to find factual information. Do NOT answer from your own knowledge.\n"
-            "2. Choose the RIGHT tool based on the task type. You can use MULTIPLE tools in sequence.\n"
-            "3. For GIS/remote-sensing factual validation, START with official_source_search or a GIS registry tool. "
-            "If you get an official URL, use official_doc_fetcher to read it before finalizing the claim. "
-            "For academic method evidence, use paper_search. For general tasks, START with web_search.\n"
-            "4. If search results are too short, use browser to read the full article.\n"
-            "5. If the task involves numbers/calculations, use calculator or code_sandbox.\n"
-            "6. You may call tools AT MOST 2 times total. After that you MUST summarize.\n"
-            "7. Only after gathering information, provide a concise summary with a confidence score (0-1).\n"
-            "8. NEVER greet the user or ask what they want to search — just execute immediately.\n"
-            "9. If you have already performed 2 tool calls, do NOT call more — write the final summary now."
-        )
+class PipeFn(Protocol):
+    """A pipe function: receives context, returns section text or None to skip."""
+    def __call__(self, ctx: "PromptContext") -> str | None: ...
 
-    def direct_analysis_system_prompt(self) -> str:
-        return (
-            "You are a thoughtful analyst. "
-            "The user has asked a question that cannot be answered by web search "
-            "(e.g., analyzing a specific private individual, personal advice, or subjective judgment). "
-            "Your job is to provide a reasoned analysis based ONLY on the information already provided in the context. "
-            "Do NOT make up facts. Clearly state what is known, what can be reasonably inferred, and what remains unknown. "
-            "End with a confidence score (0-1)."
-        )
 
-    def task_prompt(self, task: SubTask, context: dict) -> str:
-        """Build the user prompt for one SubTask."""
-        desc_lower = (task.description or "").lower()
+@dataclass
+class PromptContext:
+    """Context passed to every pipe function."""
+    task: SubTask | None = None
+    context: dict[str, Any] = field(default_factory=dict)
+    tool_names: list[str] = field(default_factory=list)
+    domain: str = ""
+    session_message_count: int = 0
 
-        tool_recommendations = []
 
-        academic_keywords = ["论文", "paper", "publication", "学术", "arxiv", "neurips", "icml", "iclr", "scholar", "citation", "文献"]
-        if any(kw in desc_lower for kw in academic_keywords):
-            tool_recommendations.append("paper_search")
+# ── Builder ──────────────────────────────────────────────────────────
 
-        official_keywords = [
-            "official", "documentation", "docs", "handbook", "user guide",
-            "esa", "usgs", "nasa", "copernicus", "earth engine", "gee",
-            "官方", "文档", "手册", "产品说明", "技术报告", "数据门户",
-        ]
-        if any(kw in desc_lower for kw in official_keywords):
-            tool_recommendations.append("official_source_search")
-            tool_recommendations.append("official_doc_fetcher")
+class PromptBuilder:
+    """Chainable prompt builder with pipe-based section composition."""
 
-        calc_keywords = ["计算", "flops", "显存", "内存", "参数量", "延迟", "成本", "公式", "数值", "统计", "数学", "公式", "推导"]
-        if any(kw in desc_lower for kw in calc_keywords):
-            tool_recommendations.append("calculator")
-            tool_recommendations.append("code_sandbox")
+    def __init__(self):
+        self._pipes: list[tuple[str, PipeFn]] = []
 
-        browser_keywords = ["详细", "原文", "全文", "深度", "详细内容", "网页内容", "文章正文"]
-        if any(kw in desc_lower for kw in browser_keywords):
-            tool_recommendations.append("browser")
+    def pipe(self, name: str, fn: PipeFn) -> "PromptBuilder":
+        """Add a pipe section. Chain with .pipe(...).pipe(...).build()."""
+        self._pipes.append((name, fn))
+        return self
 
-        file_keywords = ["文件", "文档", "dataset", "数据集", "pdf", "csv", "json"]
-        if any(kw in desc_lower for kw in file_keywords):
-            tool_recommendations.append("file_reader")
+    def build(self, ctx: PromptContext | None = None) -> str:
+        """Build the final prompt by running all pipes."""
+        ctx = ctx or PromptContext()
+        sections: list[str] = []
+        for name, fn in self._pipes:
+            result = fn(ctx)
+            if result is not None:
+                sections.append(result)
+        return "\n\n".join(sections)
 
-        geo_dataset_keywords = [
-            "landsat", "sentinel", "modis", "era5", "数据源", "数据集", "传感器",
-            "波段", "分辨率", "lst", "ndvi", "ndbi", "地表温度",
-        ]
-        if any(kw in desc_lower for kw in geo_dataset_keywords):
-            tool_recommendations.append("dataset_registry")
+    def debug(self, ctx: PromptContext | None = None) -> list[dict[str, Any]]:
+        """Run all pipes and return debug info (for logging/trace)."""
+        ctx = ctx or PromptContext()
+        info = []
+        for name, fn in self._pipes:
+            result = fn(ctx)
+            info.append({
+                "name": name,
+                "status": "ON" if result is not None else "OFF",
+                "chars": len(result) if result else 0,
+            })
+        return info
 
-        geo_method_keywords = [
-            "方法", "公式", "指数", "反演", "lst", "ndvi", "ndbi", "gwr",
-            "地理加权回归", "单窗", "单通道", "split-window",
-        ]
-        if any(kw in desc_lower for kw in geo_method_keywords):
-            tool_recommendations.append("method_registry")
 
-        geo_validation_keywords = [
-            "验证", "兼容", "检查", "风险", "限制", "crs", "云", "云掩膜",
-            "空间分辨率", "时间一致性", "验证清单",
-        ]
-        if any(kw in desc_lower for kw in geo_validation_keywords):
-            tool_recommendations.append("geo_plan_validator")
+# ── Pipe Factory Functions ───────────────────────────────────────────
 
-        if "geo_plan_validator" in tool_recommendations:
-            tool_recommendations = ["geo_plan_validator"] + [t for t in tool_recommendations if t != "geo_plan_validator"]
-        elif "official_source_search" in tool_recommendations:
-            tool_recommendations = ["official_source_search"] + [t for t in tool_recommendations if t != "official_source_search"]
-        elif "dataset_registry" in tool_recommendations:
-            tool_recommendations = ["dataset_registry"] + [t for t in tool_recommendations if t != "dataset_registry"]
-        elif "method_registry" in tool_recommendations:
-            tool_recommendations = ["method_registry"] + [t for t in tool_recommendations if t != "method_registry"]
-        elif "paper_search" in tool_recommendations:
-            tool_recommendations = ["paper_search"] + [t for t in tool_recommendations if t != "paper_search"]
-        elif not tool_recommendations:
-            tool_recommendations.insert(0, "web_search")
+def identity_section() -> PipeFn:
+    """STATIC — Agent identity and core role."""
+    text = (
+        "You are a meticulous GIS/remote-sensing research assistant. "
+        "Your job is to gather and analyze information using the RIGHT tool for each task, "
+        "then produce evidence-backed conclusions with confidence scores."
+    )
+    return lambda ctx: text
 
-        deduped = []
-        for tool_name in tool_recommendations:
-            if tool_name not in deduped:
-                deduped.append(tool_name)
-        tool_recommendations = deduped
 
-        primary_tool = tool_recommendations[0]
-        secondary_tools = tool_recommendations[1:]
+def system_rules() -> PipeFn:
+    """STATIC — Universal behavioral rules."""
+    text = (
+        "IMPORTANT RULES:\n"
+        "1. You MUST use a tool to find factual information. Do NOT answer from your own knowledge.\n"
+        "2. Choose the RIGHT tool based on the task type. You can use MULTIPLE tools in sequence.\n"
+        "3. If search results are too short, try a more specific query.\n"
+        "4. You may call tools AT MOST 3 times total. After that you MUST summarize.\n"
+        "5. Only after gathering information, provide a concise summary with a confidence score (0-1).\n"
+        "6. NEVER greet the user or ask what they want — just execute immediately.\n"
+        "7. Write your summary in the same language as the task description."
+    )
+    return lambda ctx: text
 
+
+def tool_guide() -> PipeFn:
+    """STATIC (per-session) — List available tools. Only shows tools that are registered."""
+    _TOOL_DOCS: dict[str, str] = {
+        "web_search": "General web search. Use for broad queries when no specialized tool fits.",
+        "official_source_search": "Search official GIS/RS documentation (ESA, USGS, NASA, Copernicus). USE for sensor specs, bands, algorithms, data access.",
+        "official_doc_fetcher": "Fetch and read an official documentation URL. USE after official_source_search to get page-grounded evidence.",
+        "paper_search": "Academic paper search (OpenAlex). USE for peer-reviewed methods, formulas, citation counts.",
+        "calculator": "Quick math evaluation. USE for simple calculations.",
+        "notepad": "Write/read intermediate notes. USE to record key findings during multi-step research.",
+        "file_reader": "Read local files. USE only when the task references a file path.",
+        "dataset_registry": "Curated GIS/RS dataset facts (sensors, bands, resolution, limitations).",
+        "method_registry": "Curated GIS/RS method facts (formulas, inputs, valid use cases).",
+        "geo_plan_validator": "Deterministic GIS/RS compatibility validator. USE to check dataset-method workflow validity.",
+    }
+
+    def _build(ctx: PromptContext) -> str | None:
+        if not ctx.tool_names:
+            return None
+        lines = ["AVAILABLE TOOLS:"]
+        for name in ctx.tool_names:
+            desc = _TOOL_DOCS.get(name)
+            if desc:
+                lines.append(f"- {name}: {desc}")
+        if len(lines) == 1:
+            return None
+        return "\n".join(lines)
+
+    return _build
+
+
+def tool_selection_strategy() -> PipeFn:
+    """STATIC — How to choose tools based on task type."""
+    text = (
+        "TOOL SELECTION STRATEGY:\n"
+        "- For GIS/RS factual validation: START with official_source_search or a registry tool "
+        "(dataset_registry, method_registry, geo_plan_validator). "
+        "If you get an official URL, use official_doc_fetcher to read it.\n"
+        "- For academic method evidence: use paper_search.\n"
+        "- For general/broad queries: START with web_search.\n"
+        "- For multi-step research: use notepad to record intermediate findings."
+    )
+    return lambda ctx: text
+
+
+def task_context() -> PipeFn:
+    """DYNAMIC — Task description, type, expected output, search hints."""
+    def _build(ctx: PromptContext) -> str | None:
+        task = ctx.task
+        if task is None:
+            return None
         lines = [
             f"## Task: {task.description}",
             f"Type: {task.task_type.value}",
             f"Expected output: {task.expected_type}",
-            "",
-            f"## RECOMMENDED TOOLS (in priority order): {', '.join(tool_recommendations)}",
         ]
-
-        if secondary_tools:
-            lines.append(f"Start with '{primary_tool}'. If the task involves numbers/calculations, also use {', '.join(secondary_tools)}.")
-        else:
-            lines.append(f"Use '{primary_tool}' to gather information.")
-
-        lines.extend([
-            "",
-            "## INSTRUCTIONS:",
-            f"1. First, call the '{primary_tool}' tool with a relevant query to gather information.",
-            "2. Review the results.",
-            f"3. If needed, call '{primary_tool}' ONE MORE time with a refined query.",
-            "   You may call tools AT MOST 2 times total. After the 2nd call, you MUST write the final summary.",
-            "4. If search results are too short, you may use 'browser' to read the full article (counts as 1 tool call).",
-            "5. If calculations are needed, use 'calculator' or 'code_sandbox' (counts as 1 tool call).",
-            "6. Finally, summarize your findings in Chinese with a confidence score (0-1).",
-            "7. DO NOT greet the user or ask clarifying questions — just execute immediately.",
-            "8. IMPORTANT: Your query MUST directly address the task description.",
-        ])
         if task.search_hints:
-            lines.insert(1, f"Search hints (MUST use these as primary keywords): {', '.join(task.search_hints)}")
-        if task.context_keys:
-            ctx_parts = []
-            for key in task.context_keys:
-                if key in context:
-                    ctx_parts.append(f"- {key}: {context[key]}")
-            if ctx_parts:
-                lines.append("\n## Context:")
-                lines.extend(ctx_parts)
+            lines.append(f"Search hints (use as primary keywords): {', '.join(task.search_hints)}")
         return "\n".join(lines)
+    return _build
 
-    def is_non_searchable(self, task: SubTask, context: dict) -> bool:
-        """Heuristically detect tasks that cannot be answered by web search."""
-        desc = (task.description or "").lower()
-        query = context.get("query", "").lower()
-        combined = desc + " " + query
 
-        if "朋友" in combined or "同学" in combined or "同事" in combined:
-            if any(w in combined for w in ["分析", "评价", "是什么样", "性格", "人品"]):
-                return True
+def context_injection() -> PipeFn:
+    """DYNAMIC — Inject memory context, prior results, etc."""
+    def _build(ctx: PromptContext) -> str | None:
+        if not ctx.context:
+            return None
+        parts = []
+        for key, value in ctx.context.items():
+            if value:
+                parts.append(f"[{key}] {value}")
+        if not parts:
+            return None
+        return "## Context:\n" + "\n".join(parts)
+    return _build
 
-        if any(w in combined for w in ["建议我", "我该怎么", "适合我吗", "要不要"]):
-            if "朋友" in combined or "我" in query:
-                return True
 
-        if "叫" in combined and any(w in combined for w in ["分析", "评价", "是什么样"]):
-            return True
+def domain_hints() -> PipeFn:
+    """DYNAMIC — Domain-specific guidance (only for geo_rs domain)."""
+    _GEO_HINTS = (
+        "## GIS/RS Domain Hints:\n"
+        "- Always verify sensor capabilities against official docs (e.g., Sentinel-2 has NO thermal band).\n"
+        "- Check spatial resolution compatibility before combining datasets.\n"
+        "- Distinguish LST (land surface temperature) from air temperature.\n"
+        "- NDBI can confuse bare soil with built-up areas — validate with NDVI threshold."
+    )
 
-        return False
+    def _build(ctx: PromptContext) -> str | None:
+        if ctx.domain == "geo_remote_sensing":
+            return _GEO_HINTS
+        return None
+    return _build
+
+
+def output_format() -> PipeFn:
+    """STATIC — Expected output format."""
+    text = (
+        "OUTPUT FORMAT:\n"
+        "End your response with:\n"
+        "1. A concise summary of findings\n"
+        "2. A confidence score: Confidence: X.XX (0-1)"
+    )
+    return lambda ctx: text
+
+
+# ── Pre-built prompt builders ────────────────────────────────────────
+
+def build_researcher_system_prompt(tool_names: list[str], domain: str = "") -> str:
+    """Build the system prompt for ResearcherAgent.
+
+    Layout: static first → dynamic after → better cache hit rate.
+    """
+    return (PromptBuilder()
+        # ── Static (cacheable) ──
+        .pipe("identity", identity_section())
+        .pipe("rules", system_rules())
+        .pipe("tool_guide", tool_guide())
+        .pipe("tool_strategy", tool_selection_strategy())
+        .pipe("output_format", output_format())
+        # ── Dynamic (per-domain) ──
+        .pipe("domain_hints", domain_hints())
+        .build(PromptContext(tool_names=tool_names, domain=domain))
+    )
+
+
+def build_task_prompt(
+    task: SubTask,
+    context: dict[str, Any],
+    tool_names: list[str],
+    domain: str = "",
+) -> str:
+    """Build the user prompt for one SubTask."""
+    return (PromptBuilder()
+        # ── Static ──
+        .pipe("tool_guide", tool_guide())
+        # ── Dynamic ──
+        .pipe("task_context", task_context())
+        .pipe("context_injection", context_injection())
+        .pipe("domain_hints", domain_hints())
+        .build(PromptContext(
+            task=task,
+            context=context,
+            tool_names=tool_names,
+            domain=domain,
+        ))
+    )

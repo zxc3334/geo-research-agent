@@ -317,8 +317,9 @@ class SummarizerAgent(BaseAgent):
             items = result.evidence_items[:self.compact_evidence_items_per_result]
         for item in items:
             source = f" | source: {item.source}" if item.source else ""
+            tier = f" | tier: {item.source_tier.value}" if hasattr(item, "source_tier") else ""
             lines.append(
-                f"- level={item.level.value}, confidence={item.confidence:.2f}{source}; "
+                f"- level={item.level.value}, confidence={item.confidence:.2f}{tier}{source}; "
                 f"rationale={item.rationale}"
             )
         remaining = len(result.evidence_items) - len(items)

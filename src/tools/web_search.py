@@ -22,6 +22,7 @@ from typing import Any
 import aiohttp
 
 from ..utils.env_config import get_env
+from ..utils.domain_tiers import classify_url, authority_score
 
 __all__ = ["WebSearchTool", "MockWebSearchTool", "OfficialSourceSearchTool", "BaseWebSearchTool"]
 
@@ -62,6 +63,56 @@ class BaseWebSearchTool(ABC):
                 },
             },
         }
+
+    # ------------------------------------------------------------------
+    # Search result quality scoring & ranking
+    # (domain table lives in src/utils/domain_tiers.py — single source of truth)
+    # ------------------------------------------------------------------
+
+    def _rank_results(
+        self,
+        results: list[dict[str, Any]],
+        query: str,
+    ) -> list[dict[str, Any]]:
+        """Score and sort search results by domain authority + keyword relevance.
+
+        Adds ``_quality_score`` (float) and ``_source_tier`` (str) to each result
+        dict.  Returns a new list sorted by score descending.
+        """
+        if not results:
+            return results
+
+        query_tokens = set(query.lower().split())
+        # Remove very short tokens (< 2 chars) to avoid noise.
+        query_tokens = {t for t in query_tokens if len(t) >= 2}
+
+        scored: list[dict[str, Any]] = []
+        for r in results:
+            url = r.get("url", "")
+            title = r.get("title", "")
+            snippet = r.get("snippet", "")
+
+            # 1. Domain authority score.
+            domain_score = self._domain_authority_score(url)
+
+            # 2. Keyword relevance score.
+            text = f"{title} {snippet}".lower()
+            hits = sum(1 for t in query_tokens if t in text)
+            relevance = hits / max(len(query_tokens), 1)  # 0.0 ~ 1.0
+
+            # 3. Combined score (domain 60% + relevance 40%).
+            score = domain_score * 0.6 + relevance * 40.0
+
+            r["_quality_score"] = round(score, 2)
+            r["_source_tier"] = classify_url(url).value
+            scored.append(r)
+
+        scored.sort(key=lambda x: x["_quality_score"], reverse=True)
+        return scored
+
+    def _domain_authority_score(self, url: str) -> float:
+        """Return a 0-100 authority score for a URL's domain (delegates to shared module)."""
+        return authority_score(url)
 
 
 class MockWebSearchTool(BaseWebSearchTool):
@@ -190,12 +241,17 @@ class WebSearchTool(BaseWebSearchTool):
 
     async def execute(self, query: str, top_n: int = 5) -> dict[str, Any]:
         if self.backend == "bing":
-            return await self._bing_execute(query, top_n)
-        if self.backend == "bocha":
-            return await self._bocha_execute(query, top_n)
-        if self.backend == "metaso":
-            return await self._metaso_execute(query, top_n)
-        return await self._serpapi_execute(query, top_n)
+            raw = await self._bing_execute(query, top_n)
+        elif self.backend == "bocha":
+            raw = await self._bocha_execute(query, top_n)
+        elif self.backend == "metaso":
+            raw = await self._metaso_execute(query, top_n)
+        else:
+            raw = await self._serpapi_execute(query, top_n)
+        # Post-process: rank by domain authority + keyword relevance.
+        if raw.get("results"):
+            raw["results"] = self._rank_results(raw["results"], query)
+        return raw
 
     async def _serpapi_execute(self, query: str, top_n: int) -> dict[str, Any]:
         if not self.serpapi_key:
@@ -615,6 +671,7 @@ class OfficialSourceSearchTool:
                 merged.append(normalized)
 
         results = self.search_tool._deduplicate_results(merged)[:top_n]
+        results = self.search_tool._rank_results(results, query)
         return {
             "query": query,
             "domains": selected_domains,
