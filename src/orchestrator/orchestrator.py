@@ -225,8 +225,14 @@ class Orchestrator:
                 except Exception as e:
                     logger.warning(f"[M4] Failed to store final report: {e}")
 
-            # Wiki: save raw report + trigger ingest
-            if self.wiki_store and report.content:
+            # Wiki: 质量门槛 → 只有高质量报告才 ingest 到知识库
+            # 失败/降级报告不写入 wiki（避免污染知识库）
+            # 失败经验已通过 _sync_failure_to_memory_store 记录到 M4
+            wiki_quality_gate = (
+                report.confidence >= 0.3
+                and any(r.status == AgentStatus.SUCCESS for r in self._results)
+            )
+            if self.wiki_store and report.content and wiki_quality_gate:
                 try:
                     self.wiki_store.save_raw(report.content, query)
                     logger.info("[Wiki] Raw report saved")
@@ -242,13 +248,16 @@ class Orchestrator:
                             report.content, query=query, evidence_items=all_evidence
                         ))
                     except RuntimeError:
-                        # No running loop (sync context) — run inline
                         asyncio.run(ingest.ingest(
                             report.content, query=query, evidence_items=all_evidence
                         ))
                     logger.info("[Wiki] Ingest triggered")
                 except Exception as e:
                     logger.error(f"[Wiki] Save/ingest failed: {e}", exc_info=True)
+            elif self.wiki_store and report.content:
+                logger.info(
+                    f"[Wiki] 质量门槛未达标 (confidence={report.confidence:.2f}), 跳过 ingest"
+                )
 
             return report
 
@@ -485,11 +494,13 @@ class Orchestrator:
                         metadata=item.metadata,
                     )
 
-        # M4: 将成功结果同步写入 SharedMemoryStore（持久化 + 向量索引）
+        # M4: 将结果同步写入 SharedMemoryStore（成功 + 失败）
         if self.memory_store is not None:
             for r in self._results:
                 if r.status == AgentStatus.SUCCESS and r.output:
                     self._sync_result_to_memory_store(r)
+                elif r.status in (AgentStatus.FAILED, AgentStatus.TIMEOUT):
+                    self._sync_failure_to_memory_store(r)
 
         success_count = sum(1 for r in self._results if r.status == AgentStatus.SUCCESS)
         total_count = len(self._results)
@@ -548,6 +559,50 @@ class Orchestrator:
             logger.info(f"[M4] Memory stored: {result.task_id} (evidence={level}, claim={claim_text[:60]}...)")
         except Exception as e:
             logger.warning(f"[M4] Failed to store memory for {result.task_id}: {e}")
+
+    def _classify_error(self, output: str) -> str:
+        """从错误输出中提取错误类型（纯代码，无 LLM）。"""
+        text = (output or "").lower()
+        if "timeout" in text or "timed out" in text:
+            return "超时"
+        if "rate limit" in text or "429" in text:
+            return "API限流"
+        if "connection" in text or "network" in text:
+            return "网络错误"
+        if "traceback" in text or "exception" in text:
+            return "代码异常"
+        if "api" in text or "500" in text or "503" in text:
+            return "API错误"
+        return "未知错误"
+
+    def _sync_failure_to_memory_store(self, result: AgentResult) -> None:
+        """将失败结果精简写入 M4（~150 chars，零 LLM 调用）。"""
+        try:
+            from src.memory.long_term import MemoryEntry
+            subtask = self._task_map.get(result.task_id)
+            task_desc = subtask.description[:100] if subtask else result.task_id
+            error_type = self._classify_error(result.output)
+            claim = f"任务失败: {task_desc} (原因: {error_type})"
+            entry = MemoryEntry(
+                entry_id=f"fail:{result.task_id}",
+                claim=claim,
+                source=f"task:{result.task_id}",
+                confidence=0.2,
+                agent_id=result.task_id,
+                timestamp=time.time(),
+                evidence_type="failure",
+                embedding=[],
+                topic=self._query[:50],
+                metadata={
+                    "status": "failed",
+                    "error_type": error_type,
+                    "task_description": task_desc,
+                },
+            )
+            self.memory_store.put(entry)
+            logger.info(f"[M4] Failure memory stored: {result.task_id} ({error_type})")
+        except Exception as e:
+            logger.warning(f"[M4] Failed to store failure memory for {result.task_id}: {e}")
 
     async def _do_synthesizing(self) -> OrchestratorState:
         """调用 SummarizerAgent 合成研究报告。"""
