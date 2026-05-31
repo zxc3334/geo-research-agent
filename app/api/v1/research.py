@@ -233,6 +233,8 @@ def _run_research_sync(task_id: str, req: ResearchRequest, user_id: str = ""):
         orchestrator = modules.get("orchestrator")
         if orchestrator:
             orchestrator.context_modifier = _make_context_modifier(task_id)
+            # Wire up progress callback for real-time SSE updates
+            orchestrator.progress_callback = lambda data: progress_bus.publish(task_id, data)
 
         asyncio.run(_update_task(phase="researching"))
         progress_bus.publish(task_id, {"phase": "researching", "status": "running"})

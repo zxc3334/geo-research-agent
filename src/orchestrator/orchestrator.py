@@ -66,6 +66,7 @@ class Orchestrator:
         trace_recorder: Any | None = None,
         context_modifier: Any | None = None,
         wiki_store: Any | None = None,
+        progress_callback: Any | None = None,
     ) -> None:
         self.planner = planner
         self.agent_pool = agent_pool
@@ -77,6 +78,7 @@ class Orchestrator:
         self.trace_recorder = trace_recorder
         self.context_modifier = context_modifier  # Optional callback(ctx, task) -> ctx
         self.wiki_store = wiki_store  # M7: Wiki Knowledge Base
+        self.progress_callback = progress_callback  # Optional callback(data: dict)
         self.evidence_store = EvidenceStore()
 
         # 运行时状态（保留 dict 作为快速缓存，M4 提供持久化 + 语义检索）
@@ -91,6 +93,14 @@ class Orchestrator:
         self._start_time: float = 0.0
         self._replan_count: int = 0
         self._adversarial_count: int = 0
+
+    def _emit_progress(self, **kwargs) -> None:
+        """通过 progress_callback 发布进度事件到前端。"""
+        if self.progress_callback:
+            try:
+                self.progress_callback(kwargs)
+            except Exception:
+                pass  # 不让回调错误影响主流程
 
         # 状态机处理器映射
         self._state_handlers: dict[OrchestratorState, Callable[[], asyncio.Future[OrchestratorState]]] = {
@@ -301,9 +311,11 @@ class Orchestrator:
         n_tasks = len(self._dag)
         n_layers = len(self._dag.get_parallel_groups()) if self._dag else 0
         logger.info(f"[Planning] ✓ DAG 生成完成: {n_tasks} 个子任务, {n_layers} 个执行层")
-        # 打印子任务描述以便诊断
+        # 发布规划结果到前端
+        task_list = []
         for tid, task in self._task_map.items():
             logger.info(f"[Planning]   {tid}: {task.description}")
+            task_list.append({"id": tid, "description": task.description[:200]})
             if self.trace_recorder:
                 self.trace_recorder.record(
                     "task_planned",
@@ -313,6 +325,11 @@ class Orchestrator:
                     dependencies=task.dependencies,
                     timeout_seconds=task.timeout_seconds,
                 )
+        self._emit_progress(
+            phase="planning", status="running",
+            total_subtasks=n_tasks, completed_subtasks=0,
+            task_list=task_list,
+        )
         return OrchestratorState.DISPATCHING
 
     async def _do_dispatching(self) -> OrchestratorState:
@@ -337,6 +354,11 @@ class Orchestrator:
             # 构建本层的 coroutine 列表
             async def _run_one(task_id: str, _sem=semaphore) -> AgentResult:
                 logger.debug(f"[Dispatch]   ▶ _run_one START: {task_id}")
+                self._emit_progress(
+                    phase="researching", status="running",
+                    current_task=task_id,
+                    current_task_desc=getattr(self._task_map.get(task_id), "description", "")[:150],
+                )
                 async with _sem:
                     subtask = self._task_map.get(task_id)
                     if subtask is None:
@@ -399,8 +421,6 @@ class Orchestrator:
 
             for lr in layer_results:
                 if isinstance(lr, Exception):
-                    # 将异常包装为 FAILED 结果
-                    # 这种情况理论上不会发生（_run_one 内部已捕获），但保险起见
                     all_results.append(AgentResult(
                         task_id="unknown",
                         status=AgentStatus.FAILED,
@@ -408,6 +428,15 @@ class Orchestrator:
                     ))
                 else:
                     all_results.append(lr)
+
+            # 发布层完成进度
+            completed = sum(1 for r in all_results if not isinstance(r, Exception))
+            total = len(self._task_map)
+            self._emit_progress(
+                phase="researching", status="running",
+                completed_subtasks=completed, total_subtasks=total,
+                current_task=f"Layer {layer_idx + 1}/{len(parallel_groups)} 完成",
+            )
 
             # 层间钩子：允许等待用户输入、发布进度等
             if self.context_modifier is not None:
@@ -584,8 +613,16 @@ class Orchestrator:
 
         if self._config.enable_adversarial:
             logger.info("[Synthesize] ✓ 报告合成完成，进入对抗优化")
+            self._emit_progress(phase="adversarial", status="running", current_task="对抗优化中")
             return OrchestratorState.ADVERSARIAL
         logger.info("[Synthesize] ✓ 报告合成完成")
+        report = self._memory_store.get("final_report")
+        self._emit_progress(
+            phase="completed", status="completed",
+            completed_subtasks=len(self._task_map),
+            total_subtasks=len(self._task_map),
+            confidence=getattr(report, "confidence", 0.0),
+        )
         return OrchestratorState.DONE
 
     async def _do_adversarial(self) -> OrchestratorState:
