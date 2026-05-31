@@ -125,7 +125,7 @@ export default function ProgressPanel({ status, progress, error }: Props) {
             );
           })}
         </div>
-      </div>
+      )}
 
       {/* Progress Bar */}
       <div className="mb-3">

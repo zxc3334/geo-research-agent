@@ -94,14 +94,6 @@ class Orchestrator:
         self._replan_count: int = 0
         self._adversarial_count: int = 0
 
-    def _emit_progress(self, **kwargs) -> None:
-        """通过 progress_callback 发布进度事件到前端。"""
-        if self.progress_callback:
-            try:
-                self.progress_callback(kwargs)
-            except Exception:
-                pass  # 不让回调错误影响主流程
-
         # 状态机处理器映射
         self._state_handlers: dict[OrchestratorState, Callable[[], asyncio.Future[OrchestratorState]]] = {
             OrchestratorState.IDLE: self._on_idle,
@@ -114,6 +106,14 @@ class Orchestrator:
             OrchestratorState.DONE: self._on_done,
             OrchestratorState.FAILED: self._on_failed,
         }
+
+    def _emit_progress(self, **kwargs) -> None:
+        """通过 progress_callback 发布进度事件到前端。"""
+        if self.progress_callback:
+            try:
+                self.progress_callback(kwargs)
+            except Exception:
+                pass  # 不让回调错误影响主流程
 
     # ------------------------------------------------------------------
     # 公共 API
