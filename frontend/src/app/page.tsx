@@ -5,6 +5,7 @@ import Header from "@/components/Header";
 import ResearchForm from "@/components/ResearchForm";
 import ProgressPanel from "@/components/ProgressPanel";
 import ReportViewer from "@/components/ReportViewer";
+import InteractionPanel from "@/components/InteractionPanel";
 import {
   submitResearch,
   getTask,
@@ -202,6 +203,16 @@ export default function Home() {
               />
             </div>
           )}
+
+        {/* Interaction */}
+        {viewState === "streaming" && taskDetail && (
+          <div className="mb-6">
+            <InteractionPanel
+              taskId={taskDetail.task_id}
+              isRunning={true}
+            />
+          </div>
+        )}
 
         {/* Report */}
         {report && viewState === "done" && (
