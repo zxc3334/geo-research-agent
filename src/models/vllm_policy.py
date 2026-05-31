@@ -10,8 +10,11 @@ VLLM Policy — OpenAI API 封装
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from openai import OpenAI
 
@@ -106,8 +109,8 @@ class VLLMPolicy:
             return messages
 
         self.was_truncated = True
-        print(f"[TRUNCATE] Triggered: {before_chars} chars > {max_chars} threshold. n_msgs={len(messages)}")
-        print(f"[TRUNCATE] System msgs: {len(system_msgs)}, Other msgs: {len(other_msgs)}")
+        logger.warning(f"[TRUNCATE] Triggered: {before_chars} chars > {max_chars} threshold. n_msgs={len(messages)}")
+        logger.warning(f"[TRUNCATE] System msgs: {len(system_msgs)}, Other msgs: {len(other_msgs)}")
 
         # 策略：从 other_msgs 的头部开始丢弃旧消息，保留最近交互
         # 但保证至少保留 system + 最近 3 条（否则上下文完全丢失）
@@ -121,7 +124,7 @@ class VLLMPolicy:
                     kept.pop(0)
             after_chars = _count_chars(system_msgs + kept)
             if after_chars <= max_chars:
-                print(f"[TRUNCATE] Reduced to {after_chars} chars, kept {len(kept)} non-system msgs")
+                logger.warning(f"[TRUNCATE] Reduced to {after_chars} chars, kept {len(kept)} non-system msgs")
                 return system_msgs + kept
 
         # 极端情况：即使只保留 system + 最后 3 条也超阈值
@@ -135,7 +138,7 @@ class VLLMPolicy:
             new_len = max(len(content) - excess - 100, 500)  # 留 100 字符缓冲，至少保留 500
             last_msg["content"] = content[:new_len] + "\n[CONTENT_TRUNCATED]"
             final_chars = _count_chars(system_msgs + kept)
-            print(f"[TRUNCATE] Content-truncated last msg to {new_len} chars. Final: {final_chars}")
+            logger.warning(f"[TRUNCATE] Content-truncated last msg to {new_len} chars. Final: {final_chars}")
             return system_msgs + kept
 
         return system_msgs + kept

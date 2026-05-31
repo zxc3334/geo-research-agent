@@ -63,7 +63,7 @@ agents:
       max_tool_calls_before_summary: 3
       context_budget_tokens: 12000
       compact_threshold_ratio: 0.70
-      compact_tool_result_chars: 4000
+      compact_tool_result_chars: 1500
       chars_per_token: 3.5
   summarizer:
     compact:

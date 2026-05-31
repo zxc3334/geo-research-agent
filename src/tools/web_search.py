@@ -69,6 +69,9 @@ class BaseWebSearchTool(ABC):
     # (domain table lives in src/utils/domain_tiers.py — single source of truth)
     # ------------------------------------------------------------------
 
+    # Maximum snippet length to prevent context bloat.
+    MAX_SNIPPET_CHARS = 500
+
     def _rank_results(
         self,
         results: list[dict[str, Any]],
@@ -78,6 +81,7 @@ class BaseWebSearchTool(ABC):
 
         Adds ``_quality_score`` (float) and ``_source_tier`` (str) to each result
         dict.  Returns a new list sorted by score descending.
+        Also truncates snippets to MAX_SNIPPET_CHARS to control context size.
         """
         if not results:
             return results
@@ -91,6 +95,10 @@ class BaseWebSearchTool(ABC):
             url = r.get("url", "")
             title = r.get("title", "")
             snippet = r.get("snippet", "")
+
+            # Truncate snippet at source to control context size.
+            if len(snippet) > self.MAX_SNIPPET_CHARS:
+                r["snippet"] = snippet[: self.MAX_SNIPPET_CHARS] + "..."
 
             # 1. Domain authority score.
             domain_score = self._domain_authority_score(url)

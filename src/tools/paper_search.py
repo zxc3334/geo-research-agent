@@ -86,7 +86,7 @@ class PaperSearchTool:
             "id": paper.get("id", ""),
             "title": paper.get("title", ""),
             "authors": paper.get("authors", []),
-            "summary": paper.get("summary", "") or paper.get("abstract", ""),
+            "summary": (paper.get("summary", "") or paper.get("abstract", ""))[:500],
             "published": paper.get("published", "") or paper.get("year", ""),
             "url": url,
             "pdf_url": paper.get("pdf_url", ""),

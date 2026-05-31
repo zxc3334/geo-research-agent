@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from ..orchestrator.schemas import AgentResult, AgentStatus, SubTask
 from .tool_registry import ToolRegistry
@@ -24,7 +27,7 @@ class ToolLoopConfig:
     max_tool_calls_before_summary: int = 2
     context_budget_tokens: int = 12000
     compact_threshold_ratio: float = 0.70
-    compact_tool_result_chars: int = 4000
+    compact_tool_result_chars: int = 1500
     chars_per_token: float = 3.5
 
 
@@ -134,6 +137,7 @@ class ToolCallingLoop:
 
             force_summary = self._should_force_summary(tool_results)
             self._append_assistant_and_tool_messages(response, content, tool_calls, tool_results, force_summary)
+            self._compact_old_messages()
 
         return AgentResult(
             task_id=task.task_id,
@@ -240,9 +244,9 @@ class ToolCallingLoop:
         )
 
     def _log_tool_result(self, task: SubTask, turn: int, tool_name: str, args: dict, result) -> None:
-        """Print compact tool observability for logs and demo debugging."""
+        """Log compact tool observability for logs and demo debugging."""
         if not isinstance(result, dict):
-            print(f"[ToolCall] task={task.task_id} turn={turn} tool={tool_name} args={args} result_type={type(result).__name__}")
+            logger.info(f"[ToolCall] task={task.task_id} turn={turn} tool={tool_name} result_type={type(result).__name__}")
             return
 
         urls = []
@@ -250,10 +254,10 @@ class ToolCallingLoop:
             if isinstance(item, dict) and item.get("url"):
                 urls.append(str(item["url"]))
         if result.get("error"):
-            print(f"[ToolCall] task={task.task_id} turn={turn} tool={tool_name} args={args} error={result['error']}")
+            logger.warning(f"[ToolCall] task={task.task_id} turn={turn} tool={tool_name} error={result['error']}")
             return
         url_preview = ", ".join(urls[:3]) if urls else "no-url"
-        print(
+        logger.info(
             f"[ToolCall] task={task.task_id} turn={turn} tool={tool_name} "
             f"total={result.get('total', 'n/a')} source={result.get('source', '')} urls={url_preview}"
         )
@@ -308,7 +312,7 @@ class ToolCallingLoop:
             return content
 
         compacted = self._head_tail_compact(content, self.config.compact_tool_result_chars)
-        print(
+        logger.info(
             f"[compact] tool={tool_name} chars={len(content)}->{len(compacted)} "
             f"projected={projected_chars}/{threshold_chars}"
         )
@@ -356,6 +360,46 @@ class ToolCallingLoop:
             "request timed out",
             "api key",
         ))
+
+    def _compact_old_messages(self) -> None:
+        """每轮结束后检查总量，压缩旧的 tool 消息。
+
+        当 messages 总字符数超过 budget 的 1.5 倍时，
+        从旧到新扫描 tool 消息，将 > compact_tool_result_chars 的压缩。
+        只压缩前 N-3 条 tool 消息（保留最近 3 轮交互完整）。
+        """
+        total_chars = self._messages_chars(self.messages)
+        threshold = int(
+            self.config.context_budget_tokens
+            * self.config.chars_per_token
+            * 1.5  # 1.5x compact_threshold_ratio
+        )
+        if total_chars <= threshold:
+            return
+
+        # 收集所有 tool 消息的索引
+        tool_indices = [
+            i for i, m in enumerate(self.messages)
+            if isinstance(m, dict) and m.get("role") == "tool"
+        ]
+        # 保留最近 3 条 tool 消息不压缩
+        compressible = tool_indices[:-3] if len(tool_indices) > 3 else []
+        compressed_count = 0
+        for idx in compressible:
+            msg = self.messages[idx]
+            content = msg.get("content", "")
+            if len(content) > self.config.compact_tool_result_chars:
+                msg["content"] = self._head_tail_compact(
+                    content, self.config.compact_tool_result_chars
+                )
+                compressed_count += 1
+
+        if compressed_count > 0:
+            new_total = self._messages_chars(self.messages)
+            logger.debug(
+                f"[compact] 压缩旧消息: {compressed_count} 条, "
+                f"{total_chars} → {new_total} chars"
+            )
 
     def _maybe_force_tool_use(self, turn: int, fallback_tool: str) -> None:
         if turn > 0 and self.messages and self.messages[-1].get("role") == "assistant":
