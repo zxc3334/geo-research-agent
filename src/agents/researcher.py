@@ -64,7 +64,8 @@ class ResearcherAgent(BaseAgent):
     async def run(self, task: SubTask, context: dict) -> AgentResult:
         """Execute one SubTask with a fresh loop runtime."""
         domain = context.get("domain", self._domain)
-        system_prompt = build_researcher_system_prompt(self._tool_names, domain)
+        wiki_index_content = context.get("wiki_index", "")
+        system_prompt = build_researcher_system_prompt(self._tool_names, domain, wiki_index_content)
         task_prompt = build_task_prompt(task, context, self._tool_names, domain)
 
         if self._is_non_searchable(task, context):
@@ -102,12 +103,10 @@ class ResearcherAgent(BaseAgent):
 
         search_query = task.description[:200]
         evidence_parts: list[str] = []
-        print(f"[INJECT] >>> START task={task.task_id} query={search_query[:60]}...", flush=True)
-        logger.info(f"[inject] >>> START task={task.task_id} query={search_query[:60]}...")
+        logger.debug(f"[inject] START task={task.task_id} query={search_query[:60]}...")
 
         # 1. Web search
         web_tool = self.tool_registry.tool_map.get("web_search")
-        logger.info(f"[inject] task={task.task_id} web_search tool={'found' if web_tool else 'MISSING'} type={type(web_tool).__name__ if web_tool else 'N/A'}")
         if web_tool and hasattr(web_tool, "execute"):
             try:
                 web_result = await asyncio.wait_for(
@@ -115,7 +114,7 @@ class ResearcherAgent(BaseAgent):
                     timeout=15,
                 )
                 results = web_result.get("results", []) if isinstance(web_result, dict) else []
-                logger.info(f"[inject] task={task.task_id} web_search returned {len(results)} results")
+                logger.debug(f"[inject] task={task.task_id} web_search → {len(results)} results")
                 if results:
                     lines = ["### Web Search Results (auto-fetched):"]
                     for i, r in enumerate(results[:3], 1):
@@ -132,7 +131,6 @@ class ResearcherAgent(BaseAgent):
 
         # 2. Paper search
         paper_tool = self.tool_registry.tool_map.get("paper_search")
-        logger.info(f"[inject] task={task.task_id} paper_search tool={'found' if paper_tool else 'MISSING'} type={type(paper_tool).__name__ if paper_tool else 'N/A'}")
         if paper_tool and hasattr(paper_tool, "execute"):
             try:
                 paper_result = await asyncio.wait_for(
@@ -140,7 +138,7 @@ class ResearcherAgent(BaseAgent):
                     timeout=15,
                 )
                 papers = paper_result.get("papers", []) if isinstance(paper_result, dict) else []
-                logger.info(f"[inject] task={task.task_id} paper_search returned {len(papers)} papers")
+                logger.debug(f"[inject] task={task.task_id} paper_search → {len(papers)} papers")
                 if papers:
                     lines = ["### Academic Papers (auto-fetched):"]
                     for i, p in enumerate(papers[:3], 1):
@@ -155,12 +153,12 @@ class ResearcherAgent(BaseAgent):
                 logger.warning(f"[inject] task={task.task_id} paper_search FAILED: {e}")
 
         if evidence_parts:
-            logger.info(f"[inject] task={task.task_id} injecting {len(evidence_parts)} evidence parts into prompt")
+            logger.info(f"[inject] task={task.task_id} 注入 {len(evidence_parts)} 条预取证据")
             task_prompt += (
                 "\n\n## PRE-FETCHED EXTERNAL EVIDENCE (auto-generated, use as reference):\n"
                 + "\n\n".join(evidence_parts)
                 + "\n\nYou should incorporate this evidence into your analysis. "
-                "You may still call tools to verify or补充 this information."
+                "You may still call tools to verify or supplement this information."
             )
         else:
             logger.warning(f"[inject] task={task.task_id} NO evidence collected — prompt unchanged")

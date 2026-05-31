@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>知识库 — GeoResearch Agent</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; height: 100vh; display: flex; flex-direction: column; }
+        a { color: #38bdf8; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+
+        /* Header */
+        header { background: #1e293b; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #334155; }
+        header h1 { font-size: 1.2em; color: #38bdf8; }
+        .header-actions { display: flex; gap: 12px; align-items: center; }
+        .btn { padding: 6px 14px; border: none; border-radius: 6px; font-size: 0.85em; cursor: pointer; transition: background 0.2s; }
+        .btn-primary { background: #38bdf8; color: #0f172a; font-weight: 600; }
+        .btn-primary:hover { background: #7dd3fc; }
+        .btn-secondary { background: #334155; color: #94a3b8; }
+        .btn-secondary:hover { background: #475569; color: #e2e8f0; }
+        .btn-danger { background: #7f1d1d; color: #fca5a5; }
+        .btn-danger:hover { background: #991b1b; }
+
+        /* Layout */
+        .container { display: flex; flex: 1; overflow: hidden; }
+
+        /* Sidebar */
+        .sidebar { width: 280px; background: #1e293b; border-right: 1px solid #334155; display: flex; flex-direction: column; overflow-y: auto; }
+        .sidebar-header { padding: 16px; border-bottom: 1px solid #334155; }
+        .sidebar-header h2 { font-size: 0.9em; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
+        .search-box { width: 100%; padding: 8px 12px; border: 1px solid #334155; border-radius: 6px; background: #0f172a; color: #e2e8f0; font-size: 0.9em; }
+        .search-box:focus { outline: none; border-color: #38bdf8; }
+        .category { margin-bottom: 4px; }
+        .category-header { padding: 8px 16px; font-size: 0.8em; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+        .category-header:hover { color: #94a3b8; }
+        .category-header .arrow { transition: transform 0.2s; }
+        .category-header .arrow.collapsed { transform: rotate(-90deg); }
+        .page-item { padding: 6px 16px 6px 28px; font-size: 0.9em; cursor: pointer; display: flex; align-items: center; gap: 8px; border-radius: 4px; margin: 0 8px; }
+        .page-item:hover { background: #334155; }
+        .page-item.active { background: #1e3a5f; color: #38bdf8; }
+        .page-item .status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+        .status-draft { background: #fbbf24; }
+        .status-confirmed { background: #38bdf8; }
+        .status-verified { background: #4ade80; }
+        .page-item .page-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+        /* Content */
+        .content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+        .content-header { padding: 16px 24px; border-bottom: 1px solid #334155; display: flex; align-items: center; justify-content: space-between; }
+        .content-header h2 { font-size: 1.1em; }
+        .content-header .meta { font-size: 0.8em; color: #64748b; }
+        .content-body { flex: 1; overflow-y: auto; padding: 24px; }
+        .content-body.markdown { line-height: 1.7; }
+        .content-body h1 { font-size: 1.6em; color: #38bdf8; margin-bottom: 16px; border-bottom: 1px solid #334155; padding-bottom: 8px; }
+        .content-body h2 { font-size: 1.3em; color: #7dd3fc; margin: 24px 0 12px; }
+        .content-body h3 { font-size: 1.1em; color: #94a3b8; margin: 16px 0 8px; }
+        .content-body table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+        .content-body th, .content-body td { padding: 8px 12px; border: 1px solid #334155; text-align: left; }
+        .content-body th { background: #1e293b; color: #94a3b8; font-weight: 600; }
+        .content-body code { background: #1e293b; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+        .content-body pre { background: #1e293b; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+        .content-body pre code { background: none; padding: 0; }
+        .content-body blockquote { border-left: 3px solid #38bdf8; padding-left: 16px; color: #94a3b8; margin: 12px 0; }
+        .content-body ul, .content-body ol { padding-left: 24px; margin: 8px 0; }
+        .content-body li { margin: 4px 0; }
+
+        /* Editor */
+        .editor { width: 100%; height: 100%; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 8px; padding: 16px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.9em; line-height: 1.6; resize: none; }
+        .editor:focus { outline: none; border-color: #38bdf8; }
+
+        /* Empty state */
+        .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: #64748b; }
+        .empty-state .icon { font-size: 3em; margin-bottom: 16px; }
+        .empty-state p { font-size: 1.1em; }
+
+        /* Status badge */
+        .badge { padding: 2px 8px; border-radius: 10px; font-size: 0.75em; font-weight: 600; }
+        .badge-draft { background: #78350f; color: #fbbf24; }
+        .badge-confirmed { background: #1e3a5f; color: #38bdf8; }
+        .badge-verified { background: #14532d; color: #4ade80; }
+
+        /* Toast */
+        .toast { position: fixed; bottom: 20px; right: 20px; padding: 12px 20px; border-radius: 8px; font-size: 0.9em; z-index: 1000; animation: fadeIn 0.3s; }
+        .toast-success { background: #14532d; color: #4ade80; border: 1px solid #166534; }
+        .toast-error { background: #7f1d1d; color: #fca5a5; border: 1px solid #991b1b; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+        /* Modal */
+        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 100; }
+        .modal { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 24px; width: 400px; max-width: 90vw; }
+        .modal h3 { margin-bottom: 16px; color: #38bdf8; }
+        .modal label { display: block; font-size: 0.85em; color: #94a3b8; margin-bottom: 4px; }
+        .modal input, .modal select { width: 100%; padding: 8px 12px; border: 1px solid #334155; border-radius: 6px; background: #0f172a; color: #e2e8f0; margin-bottom: 12px; }
+        .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>📚 知识库</h1>
+        <div class="header-actions">
+            <button class="btn btn-secondary" onclick="loadWiki()">🔄 刷新</button>
+            <button class="btn btn-primary" onclick="showCreateModal()">+ 新建页面</button>
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h2>我的知识库</h2>
+                <input type="text" class="search-box" placeholder="搜索页面..." oninput="filterPages(this.value)">
+            </div>
+            <div id="page-tree"></div>
+        </div>
+
+        <div class="content">
+            <div id="content-area">
+                <div class="empty-state">
+                    <div class="icon">📝</div>
+                    <p>选择一个页面查看，或创建新页面</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Modal -->
+    <div id="create-modal" class="modal-overlay" style="display:none;">
+        <div class="modal">
+            <h3>新建页面</h3>
+            <label>页面名称</label>
+            <input type="text" id="new-page-name" placeholder="例如: landsat-thermal-analysis">
+            <label>分类</label>
+            <select id="new-page-category">
+                <option value="notes">📝 笔记</option>
+                <option value="sensors">🛰️ 传感器</option>
+                <option value="methods">🔬 方法</option>
+                <option value="analyses">📊 分析</option>
+                <option value="comparisons">⚖️ 对比</option>
+                <option value="projects">📂 项目</option>
+            </select>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="hideCreateModal()">取消</button>
+                <button class="btn btn-primary" onclick="createPage()">创建</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API = 'http://127.0.0.1:8000/api/v1';
+        let currentPage = null;
+        let wikiData = null;
+        let isEditing = false;
+
+        // ── Init ──────────────────────────────────────────────
+        document.addEventListener('DOMContentLoaded', loadWiki);
+
+        async function loadWiki() {
+            try {
+                const resp = await fetch(`${API}/wiki/me`);
+                if (resp.status === 401) { showToast('请先登录', 'error'); return; }
+                wikiData = await resp.json();
+                renderTree(wikiData.pages || []);
+            } catch (e) {
+                showToast('加载失败: ' + e.message, 'error');
+            }
+        }
+
+        // ── Tree Rendering ────────────────────────────────────
+        function renderTree(pages) {
+            const tree = document.getElementById('page-tree');
+            const categories = {};
+            pages.forEach(p => {
+                const cat = p.category || 'other';
+                if (!categories[cat]) categories[cat] = [];
+                categories[cat].push(p);
+            });
+
+            const catOrder = ['sensors', 'methods', 'analyses', 'comparisons', 'projects', 'notes'];
+            const catIcons = { sensors: '🛰️', methods: '🔬', analyses: '📊', comparisons: '⚖️', projects: '📂', notes: '📝' };
+
+            let html = '';
+            catOrder.forEach(cat => {
+                const items = categories[cat];
+                if (!items || items.length === 0) return;
+                html += `<div class="category">`;
+                html += `<div class="category-header" onclick="toggleCategory(this)"><span class="arrow">▼</span> ${catIcons[cat] || '📁'} ${cat} (${items.length})</div>`;
+                html += `<div class="category-items">`;
+                items.forEach(p => {
+                    const name = p.name.replace('.md', '').replace(/-/g, ' ');
+                    const statusClass = `status-${p.status || 'draft'}`;
+                    html += `<div class="page-item" data-path="${p.path}" data-name="${name}" onclick="openPage('${p.path}')">`;
+                    html += `<span class="status-dot ${statusClass}"></span>`;
+                    html += `<span class="page-name">${name}</span>`;
+                    html += `</div>`;
+                });
+                html += `</div></div>`;
+            });
+
+            if (!html) html = '<div style="padding:24px;color:#64748b;text-align:center;">还没有页面，点击"新建页面"开始</div>';
+            tree.innerHTML = html;
+        }
+
+        function toggleCategory(header) {
+            const items = header.nextElementSibling;
+            const arrow = header.querySelector('.arrow');
+            if (items.style.display === 'none') {
+                items.style.display = 'block';
+                arrow.classList.remove('collapsed');
+            } else {
+                items.style.display = 'none';
+                arrow.classList.add('collapsed');
+            }
+        }
+
+        function filterPages(query) {
+            const items = document.querySelectorAll('.page-item');
+            const q = query.toLowerCase();
+            items.forEach(item => {
+                const name = item.dataset.name.toLowerCase();
+                item.style.display = name.includes(q) ? '' : 'none';
+            });
+        }
+
+        // ── Page Operations ───────────────────────────────────
+        async function openPage(path) {
+            if (isEditing && !confirm('放弃未保存的更改？')) return;
+            isEditing = false;
+
+            // Highlight active
+            document.querySelectorAll('.page-item').forEach(el => el.classList.remove('active'));
+            const active = document.querySelector(`[data-path="${path}"]`);
+            if (active) active.classList.add('active');
+
+            try {
+                const resp = await fetch(`${API}/wiki/me/pages/${path}`);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const page = await resp.json();
+                currentPage = { path, ...page };
+                renderPage(page);
+            } catch (e) {
+                showToast('加载页面失败: ' + e.message, 'error');
+            }
+        }
+
+        function renderPage(page) {
+            const area = document.getElementById('content-area');
+            const statusBadge = `<span class="badge badge-${page.status || 'draft'}">${page.status || 'draft'}</span>`;
+
+            area.innerHTML = `
+                <div class="content-header">
+                    <div>
+                        <h2>${page.path}</h2>
+                        <span class="meta">${statusBadge} · ${page.confirmation_count || 0} 确认 · ${(page.size || 0)} 字符</span>
+                    </div>
+                    <div style="display:flex;gap:8px;">
+                        <button class="btn btn-secondary" onclick="editPage()">✏️ 编辑</button>
+                        <button class="btn btn-danger" onclick="deletePage('${page.path}')">🗑️ 删除</button>
+                    </div>
+                </div>
+                <div class="content-body markdown">${renderMarkdown(page.content || '')}</div>
+            `;
+        }
+
+        function renderMarkdown(md) {
+            // Simple markdown → HTML (covers common cases)
+            let html = md
+                .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+                .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+                .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*(.+?)\*/g, '<em>$1</em>')
+                .replace(/`(.+?)`/g, '<code>$1</code>')
+                .replace(/^\> (.+)$/gm, '<blockquote>$1</blockquote>')
+                .replace(/^\- (.+)$/gm, '<li>$1</li>')
+                .replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2" target="_blank">$1</a>')
+                .replace(/\n\n/g, '</p><p>')
+                .replace(/\n/g, '<br>');
+
+            // Handle tables
+            html = html.replace(/\|(.+)\|/g, (match) => {
+                const cells = match.split('|').filter(c => c.trim());
+                if (cells.every(c => c.trim().match(/^[-:]+$/))) return ''; // separator row
+                const tag = match.includes('---') ? 'th' : 'td';
+                return '<tr>' + cells.map(c => `<${tag}>${c.trim()}</${tag}>`).join('') + '</tr>';
+            });
+
+            return `<p>${html}</p>`;
+        }
+
+        // ── Edit Mode ─────────────────────────────────────────
+        function editPage() {
+            if (!currentPage) return;
+            isEditing = true;
+            const area = document.getElementById('content-area');
+            area.innerHTML = `
+                <div class="content-header">
+                    <div>
+                        <h2>编辑: ${currentPage.path}</h2>
+                    </div>
+                    <div style="display:flex;gap:8px;">
+                        <button class="btn btn-secondary" onclick="cancelEdit()">取消</button>
+                        <button class="btn btn-primary" onclick="savePage()">💾 保存</button>
+                    </div>
+                </div>
+                <div class="content-body">
+                    <textarea class="editor" id="page-editor">${escapeHtml(currentPage.content || '')}</textarea>
+                </div>
+            `;
+        }
+
+        function cancelEdit() {
+            isEditing = false;
+            if (currentPage) renderPage(currentPage);
+        }
+
+        async function savePage() {
+            const content = document.getElementById('page-editor').value;
+            try {
+                await fetch(`${API}/wiki/me/pages/${currentPage.path}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content })
+                });
+                currentPage.content = content;
+                isEditing = false;
+                renderPage(currentPage);
+                showToast('保存成功', 'success');
+            } catch (e) {
+                showToast('保存失败: ' + e.message, 'error');
+            }
+        }
+
+        // ── Create / Delete ───────────────────────────────────
+        function showCreateModal() {
+            document.getElementById('create-modal').style.display = 'flex';
+            document.getElementById('new-page-name').focus();
+        }
+
+        function hideCreateModal() {
+            document.getElementById('create-modal').style.display = 'none';
+        }
+
+        async function createPage() {
+            const name = document.getElementById('new-page-name').value.trim();
+            const category = document.getElementById('new-page-category').value;
+            if (!name) { showToast('请输入页面名称', 'error'); return; }
+
+            const slug = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9\u4e00-\u9fff-]/g, '');
+            const path = `${category}/${slug}.md`;
+            const today = new Date().toISOString().split('T')[0];
+            const content = `# ${name}\n\n> 一句话描述\n\n## 内容\n\n(在此填写)\n\n## Page Status\n- status: draft\n- first_seen: ${today}\n- confirmation_count: 1\n\n## 相关页面\n\n## 来源\n`;
+
+            try {
+                await fetch(`${API}/wiki/me/pages/${path}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content, category })
+                });
+                hideCreateModal();
+                showToast('页面创建成功', 'success');
+                await loadWiki();
+                openPage(path);
+            } catch (e) {
+                showToast('创建失败: ' + e.message, 'error');
+            }
+        }
+
+        async function deletePage(path) {
+            if (!confirm(`确定删除 ${path}？`)) return;
+            try {
+                await fetch(`${API}/wiki/me/pages/${path}`, { method: 'DELETE' });
+                showToast('已删除', 'success');
+                currentPage = null;
+                isEditing = false;
+                document.getElementById('content-area').innerHTML = '<div class="empty-state"><div class="icon">📝</div><p>页面已删除</p></div>';
+                await loadWiki();
+            } catch (e) {
+                showToast('删除失败: ' + e.message, 'error');
+            }
+        }
+
+        // ── Utils ─────────────────────────────────────────────
+        function escapeHtml(text) {
+            return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        function showToast(message, type = 'success') {
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 3000);
+        }
+    </script>
+</body>
+</html>

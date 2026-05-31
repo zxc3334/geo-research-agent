@@ -57,8 +57,11 @@ def maybe_wrap_openai_client(client: Any) -> Any:
     try:
         from langsmith.wrappers import wrap_openai
         return wrap_openai(client, chat_name="ChatOpenAI")
+    except ImportError:
+        logger.debug("langsmith 未安装，跳过 wrap_openai")
+        return client
     except Exception as e:
-        logger.warning(f"wrap_openai 失败，回退到原始 client: {e}")
+        logger.debug(f"wrap_openai 失败，回退到原始 client: {e}")
         return client
 
 
@@ -107,7 +110,7 @@ def traceable(
                 metadata=metadata or {},
             )(func)
         except Exception as e:
-            logger.warning(f"[LangSmith] traceable 装饰器应用失败 ({func.__name__}): {e}")
+            logger.debug(f"[LangSmith] traceable 装饰器跳过 ({func.__name__}): {e}")
             return func
 
     return decorator

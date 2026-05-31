@@ -1,0 +1,29 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# System deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python deps
+COPY requirements.txt requirements-minimal.txt ./
+RUN pip install --no-cache-dir -r requirements-minimal.txt && \
+    pip install --no-cache-dir celery[redis]
+
+# Application code
+COPY src/ ./src/
+COPY app/ ./app/
+COPY configs/ ./configs/
+COPY scripts/ ./scripts/
+COPY pyproject.toml ./
+
+RUN pip install --no-cache-dir --no-deps -e .
+
+# Pre-download embedding model
+RUN python -X utf8 -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+
+RUN mkdir -p /app/outputs
+
+CMD ["celery", "-A", "app.core.celery_app:celery", "worker", "--loglevel=info", "--concurrency=2"]

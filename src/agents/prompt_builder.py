@@ -197,6 +197,60 @@ def domain_hints() -> PipeFn:
     return _build
 
 
+def user_instructions() -> PipeFn:
+    """DYNAMIC — Inject real-time user input between subtasks.
+
+    Users can provide additional instructions during research (e.g.,
+    "focus on Sentinel-2" or "ignore MODIS"). These are injected via
+    the InteractiveBus and passed through the context dict.
+    """
+    def _build(ctx: PromptContext) -> str | None:
+        instructions = ctx.context.get("user_instructions")
+        if not instructions:
+            return None
+        return (
+            "## User Instructions (real-time input):\n"
+            f"{instructions}\n"
+            "Please incorporate these instructions into your analysis."
+        )
+    return _build
+
+
+def wiki_index() -> PipeFn:
+    """STATIC (per-session) — Inject wiki index into system prompt.
+
+    The wiki index (index.md) lists all knowledge pages with their status.
+    It's typically 500-1000 tokens, suitable for constant presence in
+    the system prompt. This lets the LLM know what knowledge is available
+    and decide whether to search or rely on existing wiki content.
+    """
+    WIKI_INDEX_MAX_CHARS = 4000  # ~1000 tokens, leave room for rest of system prompt
+
+    def _build(ctx: PromptContext) -> str | None:
+        wiki_idx = ctx.context.get("wiki_index")
+        if not wiki_idx:
+            return None
+        if len(wiki_idx) > WIKI_INDEX_MAX_CHARS:
+            wiki_idx = wiki_idx[:WIKI_INDEX_MAX_CHARS] + "\n... (truncated)"
+        return f"## Your Knowledge Base:\n{wiki_idx}"
+    return _build
+
+
+def wiki_pages() -> PipeFn:
+    """DYNAMIC — Inject relevant wiki page content into agent context.
+
+    The orchestrator pre-fetches wiki pages relevant to the current task
+    and passes them through the context dict. This pipe injects them into
+    the task prompt so the agent can reference existing knowledge.
+    """
+    def _build(ctx: PromptContext) -> str | None:
+        pages = ctx.context.get("wiki_pages")
+        if not pages:
+            return None
+        return f"## Relevant Knowledge:\n{pages}"
+    return _build
+
+
 def output_format() -> PipeFn:
     """STATIC — Expected output format."""
     text = (
@@ -210,21 +264,28 @@ def output_format() -> PipeFn:
 
 # ── Pre-built prompt builders ────────────────────────────────────────
 
-def build_researcher_system_prompt(tool_names: list[str], domain: str = "") -> str:
+def build_researcher_system_prompt(tool_names: list[str], domain: str = "", wiki_index_content: str = "") -> str:
     """Build the system prompt for ResearcherAgent.
 
     Layout: static first → dynamic after → better cache hit rate.
+    wiki_index_content is injected as a constant section so the LLM
+    knows what knowledge is available in the user's wiki.
     """
+    ctx = PromptContext(tool_names=tool_names, domain=domain)
+    if wiki_index_content:
+        ctx.context["wiki_index"] = wiki_index_content
+
     return (PromptBuilder()
         # ── Static (cacheable) ──
         .pipe("identity", identity_section())
         .pipe("rules", system_rules())
+        .pipe("wiki_index", wiki_index())
         .pipe("tool_guide", tool_guide())
         .pipe("tool_strategy", tool_selection_strategy())
         .pipe("output_format", output_format())
         # ── Dynamic (per-domain) ──
         .pipe("domain_hints", domain_hints())
-        .build(PromptContext(tool_names=tool_names, domain=domain))
+        .build(ctx)
     )
 
 
@@ -239,8 +300,10 @@ def build_task_prompt(
         # ── Static ──
         .pipe("tool_guide", tool_guide())
         # ── Dynamic ──
+        .pipe("wiki_pages", wiki_pages())
         .pipe("task_context", task_context())
         .pipe("context_injection", context_injection())
+        .pipe("user_instructions", user_instructions())
         .pipe("domain_hints", domain_hints())
         .build(PromptContext(
             task=task,

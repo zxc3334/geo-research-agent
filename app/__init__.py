@@ -1,0 +1,1 @@
+# GeoResearch Agent — FastAPI Application

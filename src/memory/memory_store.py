@@ -326,7 +326,8 @@ class SharedMemoryStore:
 
     @trace_retriever(name="memory.query", tags=["m4", "memory"])
     def query_by_similarity(
-        self, query: str, top_k: int = 5, min_sim: float = 0.50
+        self, query: str, top_k: int = 5, min_sim: float = 0.50,
+        session_filter: str | None = None,
     ) -> list[tuple[MemoryEntry, float]]:
         """
         按 query 语义相似度搜索记忆，带相关性门槛过滤。
@@ -335,6 +336,8 @@ class SharedMemoryStore:
             query: 查询文本
             top_k: 返回条数上限
             min_sim: 最小相似度门槛，低于此值的记忆视为不相关
+            session_filter: 可选的 session_id 前缀过滤（如 "user:abc-123"）。
+                           只返回匹配 session 的记忆。None 表示不过滤。
 
         Returns:
             (MemoryEntry, similarity) 列表（按相似度降序）
@@ -348,7 +351,7 @@ class SharedMemoryStore:
         q_vec = q_vec / norm
         with self._lock:
             sims = self._embeddings.dot(q_vec)
-        top_indices = np.argsort(sims)[::-1][:top_k]
+        top_indices = np.argsort(sims)[::-1][:top_k * 3]  # Over-fetch: session filter may skip entries
         results = []
         for idx in top_indices:
             sim = float(sims[int(idx)])
@@ -356,9 +359,27 @@ class SharedMemoryStore:
                 continue
             entry_id = self._entry_ids[int(idx)]
             entry = self._entries_cache.get(entry_id)
-            if entry:
-                results.append((entry, sim))
+            if entry is None:
+                continue
+            # Session filtering: skip entries from other users/sessions
+            if session_filter and not self._matches_session(entry.session_id, session_filter):
+                continue
+            results.append((entry, sim))
+            if len(results) >= top_k:
+                break
         return results
+
+    @staticmethod
+    def _matches_session(entry_session: str, filter_session: str) -> bool:
+        """Check if an entry's session_id matches the filter.
+
+        Rules:
+        - Empty entry_session (global entries) always matches.
+        - Otherwise, entry_session must start with filter_session.
+        """
+        if not entry_session:
+            return True  # Global entry
+        return entry_session.startswith(filter_session)
 
     def query_by_topic(self, topic: str) -> list[MemoryEntry]:
         """
@@ -530,7 +551,7 @@ class SharedMemoryStore:
                 logger.info(f"Evicted entry {entry_id} (score={score:.4f}).")
         return removed
 
-    def get_context_for_query(self, query: str, max_tokens: int = 4000) -> str:
+    def get_context_for_query(self, query: str, max_tokens: int = 4000, session_filter: str | None = None) -> str:
         """
         为 Agent 组装与 query 相关的记忆上下文文本。
 
@@ -543,13 +564,14 @@ class SharedMemoryStore:
         Args:
             query: 当前查询
             max_tokens: token 预算上限
+            session_filter: 可选的 session_id 过滤（如 "user:abc-123"）
 
         Returns:
             组装好的上下文文本（空字符串表示无相关记忆）
         """
         import time
 
-        entries_with_sim = self.query_by_similarity(query, top_k=10, min_sim=0.55)
+        entries_with_sim = self.query_by_similarity(query, top_k=10, min_sim=0.55, session_filter=session_filter)
         if not entries_with_sim:
             return ""
 

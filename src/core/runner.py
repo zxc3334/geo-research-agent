@@ -277,6 +277,20 @@ def initialize_modules(config: dict, session_id: str = "") -> dict[str, Any]:
     )
     modules["agent_pool"] = agent_pool
 
+    # M7: Wiki Knowledge Base (user-specific long-term memory)
+    wiki_store = None
+    try:
+        from src.wiki.wiki_store import WikiStore
+        wiki_base = config.get("wiki", {}).get("base_path", "data/wiki")
+        user_id = session_id.split(":", 1)[1].strip() if session_id and ":" in session_id else "anonymous"
+        if not user_id:
+            user_id = "anonymous"
+        wiki_store = WikiStore(wiki_base, user_id)
+        modules["wiki_store"] = wiki_store
+        logger.info(f"[M7] Wiki Store initialized (user={user_id[:8]})")
+    except Exception as e:
+        logger.warning(f"[M7] Wiki Store init failed: {e}")
+
     orchestrator = Orchestrator(
         planner=planner,
         agent_pool=agent_pool,
@@ -286,15 +300,17 @@ def initialize_modules(config: dict, session_id: str = "") -> dict[str, Any]:
         memory_store=memory_store,
         summarizer_policy=modules.get("summarizer_policy", default_policy),
         trace_recorder=trace_recorder,
+        wiki_store=wiki_store,
     )
     modules["orchestrator"] = orchestrator
+
     logger.info("[M1] Orchestrator 模块已初始化")
 
     # M6: Self-Evolution Engine（预留，默认禁用）
     if config.get("evolution", {}).get("enabled", False):
         logger.info("[M6] Evolution 模块已启用（预留接口）")
     else:
-        logger.info("[M6] Evolution 模块已禁用")
+        logger.debug("[M6] Evolution 模块已禁用")
     if trace_recorder:
         trace_recorder.record(
             "modules_init_end",
@@ -368,7 +384,7 @@ async def run_research(query: str, config: dict, modules: dict[str, Any]) -> str
     if run_cfg.enable_evolution:
         logger.info("[Evolution] 进化优化已启用（预留接口）")
     else:
-        logger.info("[Evolution] 进化优化已跳过")
+        logger.debug("[Evolution] 进化优化已跳过")
 
     # 关闭 WebSearchTool 连接池
     from src.tools.web_search import WebSearchTool

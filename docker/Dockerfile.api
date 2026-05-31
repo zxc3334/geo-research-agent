@@ -1,0 +1,36 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# System deps for sentence-transformers and BeautifulSoup
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python deps (CPU-only torch for Docker without GPU)
+COPY requirements.txt requirements-minimal.txt ./
+RUN pip install --no-cache-dir -r requirements-minimal.txt && \
+    pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir fastapi uvicorn pydantic-settings aiosqlite sqlalchemy[asyncio] asyncpg alembic "passlib[bcrypt]" "python-jose[cryptography]" python-multipart pyyaml sentence-transformers
+
+# Application code
+COPY src/ ./src/
+COPY app/ ./app/
+COPY configs/ ./configs/
+COPY scripts/ ./scripts/
+COPY evaluation/ ./evaluation/
+COPY pyproject.toml ./
+
+# Install as editable package (no deps, already installed)
+RUN pip install --no-cache-dir --no-deps -e .
+
+# Pre-download embedding model (avoid runtime download)
+# NOTE: Uncomment when network to HuggingFace is stable
+# RUN python -X utf8 -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+
+# Create directories for persistent data
+RUN mkdir -p /app/outputs /app/data
+
+EXPOSE 8000
+
+CMD ["python", "-X", "utf8", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

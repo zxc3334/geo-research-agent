@@ -14,8 +14,11 @@ Deep Research Agent — 核心编排器 (M1: Multi-Agent Orchestrator)
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 from .schemas import (
     OrchestratorState,
@@ -61,6 +64,8 @@ class Orchestrator:
         memory_store: Any | None = None,
         summarizer_policy: Any | None = None,
         trace_recorder: Any | None = None,
+        context_modifier: Any | None = None,
+        wiki_store: Any | None = None,
     ) -> None:
         self.planner = planner
         self.agent_pool = agent_pool
@@ -70,6 +75,8 @@ class Orchestrator:
         self.memory_store = memory_store
         self.summarizer_policy = summarizer_policy
         self.trace_recorder = trace_recorder
+        self.context_modifier = context_modifier  # Optional callback(ctx, task) -> ctx
+        self.wiki_store = wiki_store  # M7: Wiki Knowledge Base
         self.evidence_store = EvidenceStore()
 
         # 运行时状态（保留 dict 作为快速缓存，M4 提供持久化 + 语义检索）
@@ -154,7 +161,7 @@ class Orchestrator:
             next_state = await handler()
             self._current_state = next_state
 
-            print(f"[Orchestrator] State transition: {self._current_state.value}")
+            logger.info(f"[Orchestrator] State transition: {self._current_state.value}")
             if self.trace_recorder:
                 self.trace_recorder.record(
                     "state_transition",
@@ -204,9 +211,34 @@ class Orchestrator:
                         },
                     )
                     self.memory_store.put(entry)
-                    print(f"[M4] Final report stored to memory (confidence={report.confidence:.2f})")
+                    logger.info(f"[M4] Final report stored to memory (confidence={report.confidence:.2f})")
                 except Exception as e:
-                    print(f"[M4] Failed to store final report: {e}")
+                    logger.warning(f"[M4] Failed to store final report: {e}")
+
+            # Wiki: save raw report + trigger ingest
+            if self.wiki_store and report.content:
+                try:
+                    self.wiki_store.save_raw(report.content, query)
+                    logger.info("[Wiki] Raw report saved")
+                    # Trigger ingest (sync, safe for thread-pool context)
+                    from src.wiki.ingest import WikiIngest
+                    ingest = WikiIngest(self.wiki_store)
+                    all_evidence = []
+                    for r in self._results:
+                        all_evidence.extend(r.evidence_items)
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(ingest.ingest(
+                            report.content, query=query, evidence_items=all_evidence
+                        ))
+                    except RuntimeError:
+                        # No running loop (sync context) — run inline
+                        asyncio.run(ingest.ingest(
+                            report.content, query=query, evidence_items=all_evidence
+                        ))
+                    logger.info("[Wiki] Ingest triggered")
+                except Exception as e:
+                    logger.error(f"[Wiki] Save/ingest failed: {e}", exc_info=True)
 
             return report
 
@@ -232,26 +264,46 @@ class Orchestrator:
         失败时直接转入 FAILED（初始计划失败无法恢复）。
         """
         try:
+            # Build context: memory + wiki
             memory_ctx = self._build_memory_context()
-            self._dag = self.planner.generate_plan(self._query, memory_ctx)
+            wiki_ctx = ""
+            if self.wiki_store:
+                try:
+                    wiki_index = self.wiki_store.get_index()
+                    wiki_pages = self.wiki_store.get_context(self._query)
+                    if wiki_index or wiki_pages:
+                        parts = []
+                        if wiki_index:
+                            parts.append(f"Wiki Index:\n{wiki_index}")
+                        if wiki_pages:
+                            parts.append(f"Relevant Wiki Pages:\n{wiki_pages}")
+                        wiki_ctx = "\n\n".join(parts)
+                except Exception as e:
+                    logger.info(f"[Wiki] Context retrieval failed: {e}")
+
+            combined_ctx = memory_ctx
+            if wiki_ctx:
+                combined_ctx = f"{memory_ctx}\n\n{wiki_ctx}" if memory_ctx else wiki_ctx
+
+            self._dag = self.planner.generate_plan(self._query, combined_ctx)
             # 从 planner 获取完整的 SubTask 信息（包括 description、search_hints 等）
             self._task_map = self.planner.get_task_map_from_dag(self._dag, self.planner._last_raw_json)
             if not self._task_map:
                 # 降级：如果解析失败，使用占位符
                 self._task_map = self._rebuild_task_map_from_dag()
         except PlanParseError as e:
-            print(f"[Planning] Failed: {e}")
+            logger.info(f"[Planning] Failed: {e}")
             return OrchestratorState.FAILED
         except Exception as e:
-            print(f"[Planning] Unexpected error: {e}")
+            logger.info(f"[Planning] Unexpected error: {e}")
             return OrchestratorState.FAILED
 
         n_tasks = len(self._dag)
         n_layers = len(self._dag.get_parallel_groups()) if self._dag else 0
-        print(f"[Planning] ✓ DAG 生成完成: {n_tasks} 个子任务, {n_layers} 个执行层")
+        logger.info(f"[Planning] ✓ DAG 生成完成: {n_tasks} 个子任务, {n_layers} 个执行层")
         # 打印子任务描述以便诊断
         for tid, task in self._task_map.items():
-            print(f"[Planning]   {tid}: {task.description}")
+            logger.info(f"[Planning]   {tid}: {task.description}")
             if self.trace_recorder:
                 self.trace_recorder.record(
                     "task_planned",
@@ -280,11 +332,12 @@ class Orchestrator:
         all_results: list[AgentResult] = []
 
         for layer_idx, group in enumerate(parallel_groups):
-            print(f"[Dispatch] ▶ Layer {layer_idx + 1}/{len(parallel_groups)}: {group} (并行执行)")
+            logger.info(f"[Dispatch] ▶ Layer {layer_idx + 1}/{len(parallel_groups)}: {group} (并行执行)")
 
             # 构建本层的 coroutine 列表
-            async def _run_one(task_id: str) -> AgentResult:
-                async with semaphore:
+            async def _run_one(task_id: str, _sem=semaphore) -> AgentResult:
+                logger.debug(f"[Dispatch]   ▶ _run_one START: {task_id}")
+                async with _sem:
                     subtask = self._task_map.get(task_id)
                     if subtask is None:
                         return AgentResult(
@@ -294,7 +347,7 @@ class Orchestrator:
                         )
 
                     # 准备上下文：先执行依赖任务的结果
-                    context = self._build_task_context(subtask)
+                    context = await self._build_task_context(subtask)
                     if self.trace_recorder:
                         self.trace_recorder.record(
                             "task_start",
@@ -340,7 +393,9 @@ class Orchestrator:
 
             # 并发执行本层
             coros = [_run_one(tid) for tid in group]
+            logger.debug(f"[Dispatch]   Gathering {len(coros)} coroutines...")
             layer_results = await asyncio.gather(*coros, return_exceptions=True)
+            logger.debug(f"[Dispatch]   Gather done: {len(layer_results)} results, types: {[type(r).__name__ for r in layer_results]}")
 
             for lr in layer_results:
                 if isinstance(lr, Exception):
@@ -353,6 +408,22 @@ class Orchestrator:
                     ))
                 else:
                     all_results.append(lr)
+
+            # 层间钩子：允许等待用户输入、发布进度等
+            if self.context_modifier is not None:
+                try:
+                    # 注入当前层的结果到 memory_store，供 context_modifier 读取
+                    for lr in all_results:
+                        if not isinstance(lr, Exception):
+                            self._memory_store[f"result:{lr.task_id}"] = lr
+                    # 调用钩子（可用于等待用户输入）
+                    import inspect
+                    if hasattr(self.context_modifier, '__call__'):
+                        result = self.context_modifier({}, None)
+                        if inspect.isawaitable(result):
+                            await result
+                except Exception as e:
+                    logger.debug(f"[Hook] context_modifier error: {e}")
 
         self._results = all_results
         return OrchestratorState.COLLECTING
@@ -395,11 +466,10 @@ class Orchestrator:
         total_count = len(self._results)
         fail_count = total_count - success_count
         status_icon = "✓" if success_count == total_count else "⚠"
-        print(f"[Collect] {status_icon} 子任务完成: {success_count}/{total_count} 成功", end="")
         if fail_count > 0:
-            print(f" ({fail_count} 失败)")
+            logger.info(f"[Collect] {status_icon} 子任务完成: {success_count}/{total_count} 成功 ({fail_count} 失败)")
         else:
-            print()
+            logger.info(f"[Collect] {status_icon} 子任务完成: {success_count}/{total_count} 成功")
 
         # 检查是否需要重规划
         if self._should_replan(self._results):
@@ -407,7 +477,7 @@ class Orchestrator:
                 self._replan_count += 1
                 return OrchestratorState.REPLANNING
             else:
-                print("[Collect] Max replan rounds reached, proceeding with partial results")
+                logger.info("[Collect] Max replan rounds reached, proceeding with partial results")
                 # 超过最大重规划次数，继续合成（用已有结果）
 
         return OrchestratorState.SYNTHESIZING
@@ -446,9 +516,9 @@ class Orchestrator:
             )
             self.memory_store.put(entry)
             level = primary_evidence.level.value if primary_evidence else "unknown"
-            print(f"[M4] Memory stored: {result.task_id} (evidence={level}, claim={claim_text[:60]}...)")
+            logger.info(f"[M4] Memory stored: {result.task_id} (evidence={level}, claim={claim_text[:60]}...)")
         except Exception as e:
-            print(f"[M4] Failed to store memory for {result.task_id}: {e}")
+            logger.warning(f"[M4] Failed to store memory for {result.task_id}: {e}")
 
     async def _do_synthesizing(self) -> OrchestratorState:
         """调用 SummarizerAgent 合成研究报告。"""
@@ -513,9 +583,9 @@ class Orchestrator:
             )
 
         if self._config.enable_adversarial:
-            print("[Synthesize] ✓ 报告合成完成，进入对抗优化")
+            logger.info("[Synthesize] ✓ 报告合成完成，进入对抗优化")
             return OrchestratorState.ADVERSARIAL
-        print("[Synthesize] ✓ 报告合成完成")
+        logger.info("[Synthesize] ✓ 报告合成完成")
         return OrchestratorState.DONE
 
     async def _do_adversarial(self) -> OrchestratorState:
@@ -530,21 +600,21 @@ class Orchestrator:
 
         # 置信度足够高时跳过对抗
         if report.confidence >= 0.8:
-            print("[Adversarial] ✓ 报告置信度已达标 (≥0.8)，跳过对抗优化")
+            logger.info("[Adversarial] ✓ 报告置信度已达标 (≥0.8)，跳过对抗优化")
             return OrchestratorState.DONE
 
         if self.adversarial_loop is None:
-            print("[Adversarial] AdversarialLoop 未配置，跳过")
+            logger.info("[Adversarial] AdversarialLoop 未配置，跳过")
             return OrchestratorState.DONE
 
         try:
-            print(f"[Adversarial] ▶ 启动 Red-Blue 对抗优化 (当前置信度={report.confidence:.2f})")
+            logger.info(f"[Adversarial] ▶ 启动 Red-Blue 对抗优化 (当前置信度={report.confidence:.2f})")
             optimized_report, history = await self.adversarial_loop.run(report)
             self._memory_store["final_report"] = optimized_report
             self._adversarial_count += len(history)
-            print(f"[Adversarial] ✓ 对抗优化完成: {len(history)} 轮, 最终置信度={optimized_report.confidence:.2f}")
+            logger.info(f"[Adversarial] ✓ 对抗优化完成: {len(history)} 轮, 最终置信度={optimized_report.confidence:.2f}")
         except Exception as e:
-            print(f"[Adversarial] ✗ 对抗优化失败: {e}，使用原始报告")
+            logger.info(f"[Adversarial] ✗ 对抗优化失败: {e}，使用原始报告")
 
         return OrchestratorState.DONE
 
@@ -561,7 +631,7 @@ class Orchestrator:
                     failed_tasks.append(st)
 
         reason = self._build_failure_reason(self._results)
-        print(f"[Replan] Round {self._replan_count}/{self._config.max_replan_rounds}. Failed tasks: {[t.task_id for t in failed_tasks]}")
+        logger.info(f"[Replan] Round {self._replan_count}/{self._config.max_replan_rounds}. Failed tasks: {[t.task_id for t in failed_tasks]}")
 
         try:
             new_dag = self.planner.replan(
@@ -577,13 +647,13 @@ class Orchestrator:
             # 清空上一轮结果（保留在 memory 中，新任务可通过 context_keys 引用）
             self._results = []
         except PlanParseError as e:
-            print(f"[Replan] Failed: {e}")
+            logger.info(f"[Replan] Failed: {e}")
             # 重规划失败，如果已有部分成功结果，尝试直接合成
             if any(r.status == AgentStatus.SUCCESS for r in self._results):
                 return OrchestratorState.SYNTHESIZING
             return OrchestratorState.FAILED
         except Exception as e:
-            print(f"[Replan] Unexpected error: {e}")
+            logger.info(f"[Replan] Unexpected error: {e}")
             if any(r.status == AgentStatus.SUCCESS for r in self._results):
                 return OrchestratorState.SYNTHESIZING
             return OrchestratorState.FAILED
@@ -640,14 +710,16 @@ class Orchestrator:
         # M4: 语义检索相关记忆
         if self.memory_store is not None:
             try:
+                # Use session_id from memory store for user-specific filtering
+                session_id = getattr(self.memory_store, 'session_id', None)
                 ctx = self.memory_store.get_context_for_query(
-                    self._query, max_tokens=2000
+                    self._query, max_tokens=2000, session_filter=session_id
                 )
                 if ctx:
-                    print(f"[M4] Retrieved {len(ctx)} chars of semantic memory context")
+                    logger.info(f"[M4] Retrieved {len(ctx)} chars of semantic memory context")
                     return ctx
             except Exception as e:
-                print(f"[M4] Semantic memory query failed: {e}, falling back to dict")
+                logger.info(f"[M4] Semantic memory query failed: {e}, falling back to dict")
 
         # 回退：运行时 dict 遍历
         parts = []
@@ -666,15 +738,16 @@ class Orchestrator:
                         query=self._query,
                         system_prompt_tokens=0,
                     )
-                    print(f"[M3] Context compressed: {total_chars} → {sum(len(c) for c in compressed)} chars")
+                    logger.info(f"[M3] Context compressed: {total_chars} → {sum(len(c) for c in compressed)} chars")
                     return "\n".join(compressed)
                 except Exception as e:
-                    print(f"[M3] Compression failed: {e}, using raw context")
+                    logger.info(f"[M3] Compression failed: {e}, using raw context")
 
         return "\n".join(parts) if parts else ""
 
-    def _build_task_context(self, subtask: SubTask) -> dict:
+    async def _build_task_context(self, subtask: SubTask) -> dict:
         """为单个 SubTask 构建执行上下文。"""
+        import inspect as _inspect
         ctx = dict(self._memory_store)
         ctx["query"] = self._query
         # 注入依赖任务的结果
@@ -682,6 +755,23 @@ class Orchestrator:
             dep_key = f"result:{dep_id}"
             if dep_key in self._memory_store:
                 ctx[f"dep:{dep_id}"] = self._memory_store[dep_key]
+        # 注入 wiki 上下文
+        if self.wiki_store:
+            try:
+                ctx["wiki_index"] = self.wiki_store.get_index()
+                ctx["wiki_pages"] = self.wiki_store.get_context(subtask.description)
+            except Exception as e:
+                logger.debug(f"[Wiki] Context injection failed: {e}")
+        # 外部钩子：允许注入用户输入等动态上下文
+        if self.context_modifier is not None:
+            try:
+                result = self.context_modifier(ctx, subtask)
+                if _inspect.isawaitable(result):
+                    ctx = await result
+                else:
+                    ctx = result
+            except Exception as e:
+                logger.debug(f"[Hook] context_modifier error: {e}")
         return ctx
 
     def _build_failure_reason(self, results: list[AgentResult]) -> str:
